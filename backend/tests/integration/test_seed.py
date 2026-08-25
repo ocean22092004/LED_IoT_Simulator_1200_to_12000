@@ -1,10 +1,85 @@
-import pytest
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession
+import asyncio
+import os
+import subprocess
+import sys
+from collections.abc import AsyncIterator
+from pathlib import Path
+from uuid import uuid4
 
+import pytest
+import pytest_asyncio
+from sqlalchemy import delete, func, make_url, select, text, update
+from sqlalchemy.ext.asyncio import (
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
+from sqlalchemy.pool import NullPool
+
+from backend.app.config import get_settings
+from backend.app.db.models.device import Gateway
+from backend.app.db.models.lamp_state import LampState
+from backend.app.db.models.location import Location
+from backend.app.db.models.site import Site
+from backend.app.db.models.zone import Zone
 from backend.app.seed import SeedTopologyConflict, seed_simulator
 
 pytestmark = pytest.mark.integration
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+
+
+async def execute_admin_statement(statement: str) -> None:
+    admin_url = make_url(get_settings().database_url).set(database="postgres")
+    engine = create_async_engine(admin_url, isolation_level="AUTOCOMMIT", poolclass=NullPool)
+    try:
+        async with engine.connect() as connection:
+            await connection.execute(text(statement))
+    finally:
+        await engine.dispose()
+
+
+async def migrate_database(database_url: str) -> None:
+    environment = os.environ | {"DATABASE_URL": database_url}
+
+    def invoke() -> None:
+        subprocess.run(
+            [sys.executable, "-m", "alembic", "upgrade", "head"],
+            cwd=PROJECT_ROOT,
+            env=environment,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+    await asyncio.to_thread(invoke)
+
+
+@pytest_asyncio.fixture
+async def seed_database_url() -> AsyncIterator[str]:
+    database_name = f"memorial_seed_test_{uuid4().hex[:12]}"
+    database_url = (
+        make_url(get_settings().database_url)
+        .set(database=database_name)
+        .render_as_string(hide_password=False)
+    )
+    await execute_admin_statement(f'CREATE DATABASE "{database_name}"')
+    try:
+        await migrate_database(database_url)
+        yield database_url
+    finally:
+        await execute_admin_statement(f'DROP DATABASE IF EXISTS "{database_name}" WITH (FORCE)')
+
+
+@pytest_asyncio.fixture
+async def session(seed_database_url: str) -> AsyncIterator[AsyncSession]:
+    engine = create_async_engine(seed_database_url, poolclass=NullPool)
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with session_factory() as database_session:
+            yield database_session
+            await database_session.rollback()
+    finally:
+        await engine.dispose()
 
 
 async def assert_mapping_invariants(
@@ -102,6 +177,87 @@ async def test_seed_rerun_is_idempotent_and_rejects_topology_change(
 
     with pytest.raises(SeedTopologyConflict, match="make reset-db"):
         await seed_simulator(12000, session=session)
+
+
+async def test_seed_rejects_parent_relationship_drift(session: AsyncSession) -> None:
+    await seed_simulator(1200, session=session)
+    zone_b_id = await session.scalar(select(Zone.id).where(Zone.code == "B"))
+    assert zone_b_id is not None
+    await session.execute(update(Gateway).where(Gateway.code == "GW-A").values(zone_id=zone_b_id))
+
+    with pytest.raises(SeedTopologyConflict, match="make reset-db"):
+        await seed_simulator(1200, session=session)
+
+
+async def test_seed_rejects_non_deterministic_location_identity(
+    session: AsyncSession,
+) -> None:
+    await seed_simulator(1, session=session)
+    await session.execute(delete(LampState))
+    await session.execute(update(Location).where(Location.code == "A001").values(id=uuid4()))
+
+    with pytest.raises(SeedTopologyConflict, match="make reset-db"):
+        await seed_simulator(1, session=session)
+
+
+async def test_seed_rejects_wrong_site_timezone(session: AsyncSession) -> None:
+    await seed_simulator(1, session=session)
+    await session.execute(update(Site).where(Site.code == "SITE-001").values(timezone="UTC"))
+
+    with pytest.raises(SeedTopologyConflict, match="make reset-db"):
+        await seed_simulator(1, session=session)
+
+
+async def test_conflicting_concurrent_seeds_cannot_both_succeed(
+    seed_database_url: str,
+) -> None:
+    engine = create_async_engine(seed_database_url, poolclass=NullPool)
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    async with session_factory() as setup_session:
+        setup_session.add(
+            Site(
+                code="SITE-001",
+                name="Existing empty site",
+                timezone="Asia/Ho_Chi_Minh",
+            )
+        )
+        await setup_session.commit()
+
+    async def run_seed(location_count: int):
+        async with session_factory() as concurrent_session:
+            try:
+                result = await seed_simulator(
+                    location_count,
+                    session=concurrent_session,
+                )
+                await concurrent_session.commit()
+                return result
+            except Exception:
+                await concurrent_session.rollback()
+                raise
+
+    try:
+        results = await asyncio.wait_for(
+            asyncio.gather(
+                run_seed(1200),
+                run_seed(12000),
+                return_exceptions=True,
+            ),
+            timeout=30,
+        )
+        async with session_factory() as verification_session:
+            persisted_location_count = await verification_session.scalar(
+                select(func.count()).select_from(Location)
+            )
+    finally:
+        await engine.dispose()
+
+    successes = [result for result in results if not isinstance(result, Exception)]
+    conflicts = [result for result in results if isinstance(result, SeedTopologyConflict)]
+    assert len(successes) == 1
+    assert len(conflicts) == 1
+    assert persisted_location_count == successes[0].location_count
 
 
 async def test_seed_12000_uses_extended_zone_codes(

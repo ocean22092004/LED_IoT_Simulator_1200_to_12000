@@ -1,6 +1,6 @@
 import pytest
 
-from backend.app.seed import excel_zone_code, mapping_for_location
+from backend.app.seed import excel_zone_code, main, mapping_for_location
 
 pytestmark = pytest.mark.unit
 
@@ -95,3 +95,13 @@ def test_mapping_rejects_non_positive_inputs(
             locations_per_zone=locations_per_zone,
             controller_capacity=controller_capacity,
         )
+
+
+def test_seed_cli_rejects_non_positive_location_count(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as exit_info:
+        main(["--locations", "0"])
+
+    assert exit_info.value.code == 2
+    assert "location count must be positive" in capsys.readouterr().err

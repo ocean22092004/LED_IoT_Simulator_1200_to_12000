@@ -8,6 +8,7 @@ from uuid import UUID, uuid5
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from backend.app.config import Settings, get_settings
 from backend.app.db.models.device import Controller, Gateway
@@ -102,12 +103,13 @@ async def _insert_batches(
     session: AsyncSession,
     table: Any,
     rows: Sequence[dict[str, Any]],
+    conflict_columns: Sequence[str],
 ) -> None:
     for start in range(0, len(rows), BATCH_SIZE):
         statement = (
             postgresql_insert(table)
             .values(rows[start : start + BATCH_SIZE])
-            .on_conflict_do_nothing()
+            .on_conflict_do_nothing(index_elements=list(conflict_columns))
         )
         await session.execute(statement)
 
@@ -119,66 +121,111 @@ async def _validate_existing_topology(
     controller_capacity: int,
 ) -> None:
     expected_zones = {mapping.zone_code for mapping in expected_mappings.values()}
-    expected_gateways = {mapping.gateway_code for mapping in expected_mappings.values()}
-    expected_controllers = {
-        mapping.controller_code: mapping.controller_address
-        for mapping in expected_mappings.values()
-    }
+    expected_people = {_seed_uuid("person", location_code) for location_code in expected_mappings}
 
     zone_result = await session.execute(select(Zone.code).where(Zone.site_id == site_id))
     if set(zone_result.scalars()) != expected_zones:
         raise _topology_conflict("zone set does not match")
 
-    gateway_result = await session.execute(select(Gateway.code).where(Gateway.site_id == site_id))
-    if set(gateway_result.scalars()) != expected_gateways:
-        raise _topology_conflict("gateway set does not match")
+    gateway_result = await session.execute(
+        select(Gateway.code, Zone.code)
+        .join(Zone, Zone.id == Gateway.zone_id)
+        .where(Gateway.site_id == site_id)
+    )
+    existing_gateways = {gateway_code: zone_code for gateway_code, zone_code in gateway_result}
+    if existing_gateways != {
+        mapping.gateway_code: mapping.zone_code for mapping in expected_mappings.values()
+    }:
+        raise _topology_conflict("gateway set or zone relationship does not match")
 
     controller_result = await session.execute(
-        select(Controller.code, Controller.address, Controller.channel_capacity)
+        select(
+            Gateway.code,
+            Controller.code,
+            Controller.address,
+            Controller.channel_capacity,
+        )
         .join(Gateway, Gateway.id == Controller.gateway_id)
         .where(Gateway.site_id == site_id)
     )
     existing_controllers = {
-        code: (address, capacity) for code, address, capacity in controller_result
+        (gateway_code, code, address, capacity)
+        for gateway_code, code, address, capacity in controller_result
     }
-    if existing_controllers != {
-        code: (address, controller_capacity) for code, address in expected_controllers.items()
-    }:
-        raise _topology_conflict("controller set or capacity does not match")
+    expected_controller_rows = {
+        (
+            mapping.gateway_code,
+            mapping.controller_code,
+            mapping.controller_address,
+            controller_capacity,
+        )
+        for mapping in expected_mappings.values()
+    }
+    if existing_controllers != expected_controller_rows:
+        raise _topology_conflict("controller set, parent, or capacity does not match")
 
+    person_result = await session.execute(
+        select(DeceasedPerson.id).where(DeceasedPerson.site_id == site_id)
+    )
+    if set(person_result.scalars()) != expected_people:
+        raise _topology_conflict("person set does not match")
+
+    location_gateway = aliased(Gateway)
+    controller_gateway = aliased(Gateway)
     location_result = await session.execute(
         select(
+            Location.id,
             Location.code,
+            Location.person_id,
             Zone.code,
-            Gateway.code,
+            location_gateway.code,
             Controller.code,
             Controller.address,
             Location.channel_number,
+            controller_gateway.code,
         )
         .join(Zone, Zone.id == Location.zone_id)
-        .join(Gateway, Gateway.id == Location.gateway_id)
+        .join(location_gateway, location_gateway.id == Location.gateway_id)
         .join(Controller, Controller.id == Location.controller_id)
+        .join(controller_gateway, controller_gateway.id == Controller.gateway_id)
         .where(Location.site_id == site_id)
     )
     existing_mappings = {
-        location_code: HardwareMapping(
-            zone_code=zone_code,
-            gateway_code=gateway_code,
-            controller_code=controller_code,
-            controller_address=controller_address,
-            channel_number=channel_number,
+        location_code: (
+            location_id,
+            person_id,
+            HardwareMapping(
+                zone_code=zone_code,
+                gateway_code=gateway_code,
+                controller_code=controller_code,
+                controller_address=controller_address,
+                channel_number=channel_number,
+            ),
+            controller_gateway_code,
         )
         for (
+            location_id,
             location_code,
+            person_id,
             zone_code,
             gateway_code,
             controller_code,
             controller_address,
             channel_number,
+            controller_gateway_code,
         ) in location_result
     }
-    if existing_mappings != expected_mappings:
-        raise _topology_conflict("location mapping does not match")
+    expected_location_rows = {
+        location_code: (
+            _seed_uuid("location", location_code),
+            _seed_uuid("person", location_code),
+            mapping,
+            mapping.gateway_code,
+        )
+        for location_code, mapping in expected_mappings.items()
+    }
+    if existing_mappings != expected_location_rows:
+        raise _topology_conflict("location identity or mapping does not match")
 
 
 async def _count_existing_topology(session: AsyncSession, site_id: UUID) -> tuple[int, int]:
@@ -197,9 +244,12 @@ async def _count_existing_topology(session: AsyncSession, site_id: UUID) -> tupl
         .join(Gateway, Gateway.id == Controller.gateway_id)
         .where(Gateway.site_id == site_id)
     )
+    person_count = await session.scalar(
+        select(func.count()).select_from(DeceasedPerson).where(DeceasedPerson.site_id == site_id)
+    )
     return int(location_count or 0), int(zone_count or 0) + int(gateway_count or 0) + int(
         controller_count or 0
-    )
+    ) + int(person_count or 0)
 
 
 def _build_expected_mappings(
@@ -253,10 +303,17 @@ async def _seed_simulator(
                 "timezone": SITE_TIMEZONE,
             }
         ],
+        ["code"],
     )
-    site_id = await session.scalar(select(Site.id).where(Site.code == SITE_CODE))
-    if site_id is None:
+    site_result = await session.execute(
+        select(Site.id, Site.timezone).where(Site.code == SITE_CODE).with_for_update()
+    )
+    site_row = site_result.one_or_none()
+    if site_row is None:
         raise RuntimeError(f"failed to create or find {SITE_CODE}")
+    site_id, site_timezone = site_row
+    if site_timezone != SITE_TIMEZONE:
+        raise _topology_conflict(f"site timezone is {site_timezone!r}, expected {SITE_TIMEZONE!r}")
 
     existing_location_count, existing_hardware_count = await _count_existing_topology(
         session, site_id
@@ -288,6 +345,7 @@ async def _seed_simulator(
             }
             for index, zone_code in enumerate(zone_codes, start=1)
         ],
+        ["site_id", "code"],
     )
     zone_result = await session.execute(
         select(Zone.code, Zone.id).where(
@@ -312,6 +370,7 @@ async def _seed_simulator(
             }
             for zone_code in zone_codes
         ],
+        ["site_id", "code"],
     )
     gateway_codes = [f"GW-{zone_code}" for zone_code in zone_codes]
     gateway_result = await session.execute(
@@ -340,6 +399,7 @@ async def _seed_simulator(
             }
             for code, mapping in controller_mappings.items()
         ],
+        ["gateway_id", "code"],
     )
     controller_result = await session.execute(
         select(Controller.code, Controller.id)
@@ -380,9 +440,19 @@ async def _seed_simulator(
         )
         lamp_state_rows.append({"location_id": location_id})
 
-    await _insert_batches(session, DeceasedPerson.__table__, person_rows)
-    await _insert_batches(session, Location.__table__, location_rows)
-    await _insert_batches(session, LampState.__table__, lamp_state_rows)
+    await _insert_batches(session, DeceasedPerson.__table__, person_rows, ["id"])
+    await _insert_batches(
+        session,
+        Location.__table__,
+        location_rows,
+        ["site_id", "code"],
+    )
+    await _insert_batches(
+        session,
+        LampState.__table__,
+        lamp_state_rows,
+        ["location_id"],
+    )
     await session.flush()
 
     site_count = await session.scalar(
