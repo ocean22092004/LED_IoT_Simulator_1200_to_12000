@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.pool import NullPool
 
 from backend.app.config import get_settings
-from backend.app.db.models.device import Gateway
+from backend.app.db.models.device import Controller, Gateway
 from backend.app.db.models.lamp_state import LampState
 from backend.app.db.models.location import Location
 from backend.app.db.models.site import Site
@@ -184,6 +184,72 @@ async def test_seed_rejects_parent_relationship_drift(session: AsyncSession) -> 
     zone_b_id = await session.scalar(select(Zone.id).where(Zone.code == "B"))
     assert zone_b_id is not None
     await session.execute(update(Gateway).where(Gateway.code == "GW-A").values(zone_id=zone_b_id))
+
+    with pytest.raises(SeedTopologyConflict, match="make reset-db"):
+        await seed_simulator(1200, session=session)
+
+
+async def test_seed_rejects_gateway_parent_from_another_site(
+    session: AsyncSession,
+) -> None:
+    await seed_simulator(1200, session=session)
+    other_site = Site(
+        code="SITE-OTHER",
+        name="Other site",
+        timezone="Asia/Ho_Chi_Minh",
+    )
+    session.add(other_site)
+    await session.flush()
+    other_zone = Zone(site_id=other_site.id, code="A", name="Other A")
+    session.add(other_zone)
+    await session.flush()
+    await session.execute(
+        update(Gateway).where(Gateway.code == "GW-A").values(zone_id=other_zone.id)
+    )
+
+    with pytest.raises(SeedTopologyConflict, match="make reset-db"):
+        await seed_simulator(1200, session=session)
+
+
+async def test_seed_rejects_location_parents_from_another_site(
+    session: AsyncSession,
+) -> None:
+    await seed_simulator(1200, session=session)
+    other_site = Site(
+        code="SITE-OTHER",
+        name="Other site",
+        timezone="Asia/Ho_Chi_Minh",
+    )
+    session.add(other_site)
+    await session.flush()
+    other_zone = Zone(site_id=other_site.id, code="A", name="Other A")
+    session.add(other_zone)
+    await session.flush()
+    other_gateway = Gateway(
+        site_id=other_site.id,
+        zone_id=other_zone.id,
+        code="GW-A",
+        name="Other GW-A",
+    )
+    session.add(other_gateway)
+    await session.flush()
+    other_controller = Controller(
+        gateway_id=other_gateway.id,
+        code="CTRL-A-01",
+        address=1,
+        channel_capacity=64,
+    )
+    session.add(other_controller)
+    await session.flush()
+    await session.execute(
+        update(Location)
+        .where(Location.code == "A001")
+        .values(
+            zone_id=other_zone.id,
+            gateway_id=other_gateway.id,
+            controller_id=other_controller.id,
+        )
+    )
 
     with pytest.raises(SeedTopologyConflict, match="make reset-db"):
         await seed_simulator(1200, session=session)

@@ -8,7 +8,6 @@ from uuid import UUID, uuid5
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import aliased
 
 from backend.app.config import Settings, get_settings
 from backend.app.db.models.device import Controller, Gateway
@@ -120,27 +119,43 @@ async def _validate_existing_topology(
     expected_mappings: dict[str, HardwareMapping],
     controller_capacity: int,
 ) -> None:
-    expected_zones = {mapping.zone_code for mapping in expected_mappings.values()}
+    expected_zone_ids = {
+        mapping.zone_code: _seed_uuid("zone", mapping.zone_code)
+        for mapping in expected_mappings.values()
+    }
+    expected_gateway_ids = {
+        mapping.gateway_code: _seed_uuid("gateway", mapping.gateway_code)
+        for mapping in expected_mappings.values()
+    }
+    expected_controller_ids = {
+        mapping.controller_code: _seed_uuid("controller", mapping.controller_code)
+        for mapping in expected_mappings.values()
+    }
     expected_people = {_seed_uuid("person", location_code) for location_code in expected_mappings}
 
-    zone_result = await session.execute(select(Zone.code).where(Zone.site_id == site_id))
-    if set(zone_result.scalars()) != expected_zones:
-        raise _topology_conflict("zone set does not match")
+    zone_result = await session.execute(select(Zone.code, Zone.id).where(Zone.site_id == site_id))
+    if {code: identifier for code, identifier in zone_result} != expected_zone_ids:
+        raise _topology_conflict("zone identity or site relationship does not match")
 
     gateway_result = await session.execute(
-        select(Gateway.code, Zone.code)
-        .join(Zone, Zone.id == Gateway.zone_id)
-        .where(Gateway.site_id == site_id)
+        select(Gateway.code, Gateway.id, Gateway.zone_id).where(Gateway.site_id == site_id)
     )
-    existing_gateways = {gateway_code: zone_code for gateway_code, zone_code in gateway_result}
+    existing_gateways = {
+        gateway_code: (gateway_id, zone_id) for gateway_code, gateway_id, zone_id in gateway_result
+    }
     if existing_gateways != {
-        mapping.gateway_code: mapping.zone_code for mapping in expected_mappings.values()
+        gateway_code: (
+            gateway_id,
+            expected_zone_ids[gateway_code.removeprefix("GW-")],
+        )
+        for gateway_code, gateway_id in expected_gateway_ids.items()
     }:
-        raise _topology_conflict("gateway set or zone relationship does not match")
+        raise _topology_conflict("gateway identity, site, or zone relationship does not match")
 
     controller_result = await session.execute(
         select(
-            Gateway.code,
+            Controller.id,
+            Controller.gateway_id,
             Controller.code,
             Controller.address,
             Controller.channel_capacity,
@@ -149,12 +164,13 @@ async def _validate_existing_topology(
         .where(Gateway.site_id == site_id)
     )
     existing_controllers = {
-        (gateway_code, code, address, capacity)
-        for gateway_code, code, address, capacity in controller_result
+        (identifier, gateway_id, code, address, capacity)
+        for identifier, gateway_id, code, address, capacity in controller_result
     }
     expected_controller_rows = {
         (
-            mapping.gateway_code,
+            expected_controller_ids[mapping.controller_code],
+            expected_gateway_ids[mapping.gateway_code],
             mapping.controller_code,
             mapping.controller_address,
             controller_capacity,
@@ -170,57 +186,44 @@ async def _validate_existing_topology(
     if set(person_result.scalars()) != expected_people:
         raise _topology_conflict("person set does not match")
 
-    location_gateway = aliased(Gateway)
-    controller_gateway = aliased(Gateway)
     location_result = await session.execute(
         select(
             Location.id,
             Location.code,
             Location.person_id,
-            Zone.code,
-            location_gateway.code,
-            Controller.code,
-            Controller.address,
+            Location.zone_id,
+            Location.gateway_id,
+            Location.controller_id,
             Location.channel_number,
-            controller_gateway.code,
-        )
-        .join(Zone, Zone.id == Location.zone_id)
-        .join(location_gateway, location_gateway.id == Location.gateway_id)
-        .join(Controller, Controller.id == Location.controller_id)
-        .join(controller_gateway, controller_gateway.id == Controller.gateway_id)
-        .where(Location.site_id == site_id)
+        ).where(Location.site_id == site_id)
     )
     existing_mappings = {
         location_code: (
             location_id,
             person_id,
-            HardwareMapping(
-                zone_code=zone_code,
-                gateway_code=gateway_code,
-                controller_code=controller_code,
-                controller_address=controller_address,
-                channel_number=channel_number,
-            ),
-            controller_gateway_code,
+            zone_id,
+            gateway_id,
+            controller_id,
+            channel_number,
         )
         for (
             location_id,
             location_code,
             person_id,
-            zone_code,
-            gateway_code,
-            controller_code,
-            controller_address,
+            zone_id,
+            gateway_id,
+            controller_id,
             channel_number,
-            controller_gateway_code,
         ) in location_result
     }
     expected_location_rows = {
         location_code: (
             _seed_uuid("location", location_code),
             _seed_uuid("person", location_code),
-            mapping,
-            mapping.gateway_code,
+            expected_zone_ids[mapping.zone_code],
+            expected_gateway_ids[mapping.gateway_code],
+            expected_controller_ids[mapping.controller_code],
+            mapping.channel_number,
         )
         for location_code, mapping in expected_mappings.items()
     }
