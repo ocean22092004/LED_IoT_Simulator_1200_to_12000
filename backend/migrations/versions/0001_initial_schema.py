@@ -341,7 +341,7 @@ def upgrade() -> None:
     op.create_table(
         "device_events",
         sa.Column("id", sa.BigInteger(), autoincrement=True, nullable=False),
-        sa.Column("site_id", postgresql.UUID(as_uuid=True), nullable=True),
+        sa.Column("site_id", postgresql.UUID(as_uuid=True), nullable=False),
         sa.Column("gateway_id", postgresql.UUID(as_uuid=True), nullable=True),
         sa.Column("controller_id", postgresql.UUID(as_uuid=True), nullable=True),
         sa.Column("location_id", postgresql.UUID(as_uuid=True), nullable=True),

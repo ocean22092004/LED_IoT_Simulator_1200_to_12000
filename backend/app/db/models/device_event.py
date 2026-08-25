@@ -14,7 +14,9 @@ class DeviceEvent(Base):
     __tablename__ = "device_events"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    site_id: Mapped[UUID | None] = mapped_column(PostgreSQLUUID(as_uuid=True))
+    site_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), nullable=False
+    )
     gateway_id: Mapped[UUID | None] = mapped_column(PostgreSQLUUID(as_uuid=True))
     controller_id: Mapped[UUID | None] = mapped_column(PostgreSQLUUID(as_uuid=True))
     location_id: Mapped[UUID | None] = mapped_column(PostgreSQLUUID(as_uuid=True))

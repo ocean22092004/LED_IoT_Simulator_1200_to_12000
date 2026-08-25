@@ -8,9 +8,12 @@ from backend.app.common.enums import ActualState, DesiredState
 from backend.app.db.models.activation import Activation
 from backend.app.db.models.anniversary import AnniversaryRule
 from backend.app.db.models.device import Controller
+from backend.app.db.models.device_event import DeviceEvent
 from backend.app.db.models.lamp_state import LampState
 from backend.app.db.models.person import DeceasedPerson
 from backend.tests.integration.conftest import MappedTopology
+
+pytestmark = pytest.mark.integration
 
 
 async def test_location_code_is_unique_within_site(mapped_topology: MappedTopology):
@@ -127,6 +130,22 @@ async def test_activation_rejects_duplicate_non_null_dedupe_key(
                 dedupe_key="anniversary:2026-08-25",
             ),
         ]
+    )
+
+    with pytest.raises(IntegrityError):
+        await session.flush()
+
+
+async def test_device_event_requires_site_id(session: AsyncSession):
+    now = datetime.now(UTC)
+    session.add(
+        DeviceEvent(
+            site_id=None,
+            event_type="heartbeat",
+            occurred_at=now,
+            received_at=now,
+            payload={},
+        )
     )
 
     with pytest.raises(IntegrityError):
