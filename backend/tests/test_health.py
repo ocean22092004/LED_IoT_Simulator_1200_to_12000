@@ -15,10 +15,10 @@ async def request(app: FastAPI, path: str):
 
 
 async def test_liveness(app_factory: Callable[[ReadinessProbe], FastAPI]):
-    async def ready() -> bool:
-        return True
+    async def readiness_must_not_be_called() -> bool:
+        raise AssertionError("liveness must not depend on database readiness")
 
-    response = await request(app_factory(ready), "/health/live")
+    response = await request(app_factory(readiness_must_not_be_called), "/health/live")
 
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}

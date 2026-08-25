@@ -35,22 +35,29 @@ services:
     environment:
       APP_ENV: ${APP_ENV:-development}
       APP_TIMEZONE: ${APP_TIMEZONE:-Asia/Ho_Chi_Minh}
-      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-memorial}:${POSTGRES_PASSWORD:-memorial}@postgres:5432/${POSTGRES_DB:-memorial}
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://memorial:memorial@postgres:5432/memorial}
       MQTT_HOST: ${MQTT_HOST:-mosquitto}
       MQTT_PORT: ${MQTT_PORT:-1883}
       MQTT_USERNAME: ${MQTT_USERNAME:-memorial}
       MQTT_PASSWORD: ${MQTT_PASSWORD:-change-me}
       JWT_SECRET: ${JWT_SECRET:-change-me}
+      JWT_EXPIRE_MINUTES: ${JWT_EXPIRE_MINUTES:-480}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-change-me}
       STAFF_PASSWORD: ${STAFF_PASSWORD:-change-me}
       TECH_PASSWORD: ${TECH_PASSWORD:-change-me}
+      SIMULATOR_ADMIN_ENABLED: ${SIMULATOR_ADMIN_ENABLED:-true}
+      SIMULATOR_LOCATION_COUNT: ${SIMULATOR_LOCATION_COUNT:-1200}
+      SIMULATOR_ZONES: ${SIMULATOR_ZONES:-A,B,C,D}
+      SIMULATOR_LOCATIONS_PER_ZONE: ${SIMULATOR_LOCATIONS_PER_ZONE:-300}
+      SIMULATOR_CONTROLLER_CAPACITY: ${SIMULATOR_CONTROLLER_CAPACITY:-64}
+      DEVICE_HEARTBEAT_SECONDS: ${DEVICE_HEARTBEAT_SECONDS:-5}
+      DEVICE_OFFLINE_AFTER_SECONDS: ${DEVICE_OFFLINE_AFTER_SECONDS:-15}
+      COMMAND_ACK_TIMEOUT_SECONDS: ${COMMAND_ACK_TIMEOUT_SECONDS:-5}
     command: ["uvicorn", "backend.app.main:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]
     ports:
       - "8000:8000"
     depends_on:
       postgres:
-        condition: service_healthy
-      mosquitto:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=2)"]
@@ -61,4 +68,3 @@ services:
 volumes:
   postgres-data:
   mosquitto-data:
-

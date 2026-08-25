@@ -15,4 +15,3 @@ def test_settings_reads_environment_override(monkeypatch):
     settings = Settings(_env_file=None)
 
     assert settings.simulator_location_count == 12000
-

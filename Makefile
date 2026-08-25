@@ -41,4 +41,3 @@ reset-db:
 
 compose-config:
 	$(COMPOSE) config --quiet
-
