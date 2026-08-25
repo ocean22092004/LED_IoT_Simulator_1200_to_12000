@@ -18,7 +18,8 @@ logs:
 	$(COMPOSE) logs -f
 
 test:
-	$(COMPOSE) run --rm api pytest backend/tests -q
+	$(COMPOSE) run --rm api pytest backend/tests -m 'not docker' -q
+	$(PYTHON) -m pytest backend/tests -m docker -q
 
 test-unit:
 	$(PYTHON) -m pytest backend/tests -m 'not integration and not scenario and not docker' -q
