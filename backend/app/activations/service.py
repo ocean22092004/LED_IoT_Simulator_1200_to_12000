@@ -192,3 +192,60 @@ async def end_activation(
             await owned_session.rollback()
             raise
     return activation
+
+
+async def _expire_activations(
+    now: datetime,
+    limit: int,
+    session: AsyncSession,
+) -> int:
+    _require_aware(now, "now")
+    if limit <= 0:
+        raise ValueError("limit must be positive")
+    activations = list(
+        await session.scalars(
+            select(Activation)
+            .where(
+                Activation.ended_at.is_(None),
+                Activation.expires_at.is_not(None),
+                Activation.expires_at <= now,
+            )
+            .order_by(Activation.expires_at, Activation.id)
+            .limit(limit)
+            .with_for_update(skip_locked=True)
+        )
+    )
+    location_ids = {activation.location_id for activation in activations}
+    for activation in activations:
+        activation.ended_at = now
+    await session.flush()
+    for location_id in location_ids:
+        resolution = await resolve_desired_state(location_id, now, session=session)
+        if resolution.changed:
+            await reconcile_location(
+                location_id,
+                reason="EXPIRY",
+                now=now,
+                session=session,
+            )
+    return len(activations)
+
+
+async def expire_activations(
+    *,
+    now: datetime | None = None,
+    limit: int = 500,
+    session: AsyncSession | None = None,
+) -> int:
+    expiry_time = now or datetime.now(UTC)
+    if session is not None:
+        return await _expire_activations(expiry_time, limit, session)
+
+    async with get_session_factory()() as owned_session:
+        try:
+            expired = await _expire_activations(expiry_time, limit, owned_session)
+            await owned_session.commit()
+        except Exception:
+            await owned_session.rollback()
+            raise
+    return expired

@@ -83,6 +83,25 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  scheduler:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    environment:
+      APP_TIMEZONE: ${APP_TIMEZONE:-Asia/Ho_Chi_Minh}
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://memorial:memorial@postgres:5432/memorial}
+      DEVICE_OFFLINE_AFTER_SECONDS: ${DEVICE_OFFLINE_AFTER_SECONDS:-15}
+    command: ["python", "-m", "backend.app.workers.scheduler"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "test", "-f", "/tmp/scheduler-ready"]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+    restart: unless-stopped
+
   device-consumer:
     build:
       context: .

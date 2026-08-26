@@ -57,6 +57,12 @@ def test_compose_forwards_api_and_command_worker_configuration():
     assert worker["depends_on"]["postgres"]["condition"] == "service_healthy"
     assert worker["depends_on"]["mosquitto"]["condition"] == "service_healthy"
 
+    scheduler = compose["services"]["scheduler"]
+    assert scheduler["command"] == ["python", "-m", "backend.app.workers.scheduler"]
+    assert scheduler["environment"]["DATABASE_URL"] == environment["DATABASE_URL"]
+    assert scheduler["environment"]["DEVICE_OFFLINE_AFTER_SECONDS"] == "21"
+    assert set(scheduler["depends_on"]) == {"postgres"}
+
     consumer = compose["services"]["device-consumer"]
     assert consumer["command"] == [
         "python",
