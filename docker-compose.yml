@@ -83,6 +83,27 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  gateway-sim:
+    build:
+      context: .
+      dockerfile: simulator/Dockerfile
+    environment:
+      MQTT_HOST: ${MQTT_HOST:-mosquitto}
+      MQTT_PORT: ${MQTT_PORT:-1883}
+      MQTT_USERNAME: ${MQTT_USERNAME:-memorial}
+      MQTT_PASSWORD: ${MQTT_PASSWORD:-change-me}
+      SIMULATOR_SITE_CODE: ${SIMULATOR_SITE_CODE:-SITE-001}
+      SIMULATOR_LOCATION_COUNT: ${SIMULATOR_LOCATION_COUNT:-1200}
+      SIMULATOR_LOCATIONS_PER_ZONE: ${SIMULATOR_LOCATIONS_PER_ZONE:-300}
+      SIMULATOR_CONTROLLER_CAPACITY: ${SIMULATOR_CONTROLLER_CAPACITY:-64}
+      SIMULATOR_ACK_DROP_RATE: ${SIMULATOR_ACK_DROP_RATE:-0.0}
+      SIMULATOR_COMMAND_LATENCY_MS: ${SIMULATOR_COMMAND_LATENCY_MS:-0}
+      DEVICE_HEARTBEAT_SECONDS: ${DEVICE_HEARTBEAT_SECONDS:-5}
+    depends_on:
+      mosquitto:
+        condition: service_healthy
+    restart: unless-stopped
+
 volumes:
   postgres-data:
   mosquitto-data:

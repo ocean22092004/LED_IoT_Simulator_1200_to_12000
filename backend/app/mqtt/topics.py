@@ -13,6 +13,28 @@ def command_topic(site_code: str, gateway_code: str) -> str:
     return f"{TOPIC_PREFIX}/sites/{site}/gateways/{gateway}/commands"
 
 
+def _gateway_topic(site_code: str, gateway_code: str, suffix: str) -> str:
+    site = _segment(site_code, "site_code")
+    gateway = _segment(gateway_code, "gateway_code")
+    return f"{TOPIC_PREFIX}/sites/{site}/gateways/{gateway}/{suffix}"
+
+
+def ack_topic(site_code: str, gateway_code: str) -> str:
+    return _gateway_topic(site_code, gateway_code, "acks")
+
+
+def heartbeat_topic(site_code: str, gateway_code: str) -> str:
+    return _gateway_topic(site_code, gateway_code, "heartbeat")
+
+
+def presence_topic(site_code: str, gateway_code: str) -> str:
+    return _gateway_topic(site_code, gateway_code, "presence")
+
+
+def snapshot_topic(site_code: str, gateway_code: str) -> str:
+    return _gateway_topic(site_code, gateway_code, "snapshot")
+
+
 def ack_topic_filter() -> str:
     return f"{TOPIC_PREFIX}/sites/+/gateways/+/acks"
 

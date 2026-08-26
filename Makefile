@@ -19,10 +19,11 @@ logs:
 
 test:
 	$(COMPOSE) run --rm api pytest backend/tests -m 'not docker' -q
+	$(COMPOSE) run --rm gateway-sim pytest simulator/tests -q
 	$(PYTHON) -m pytest backend/tests -m docker -q
 
 test-unit:
-	$(PYTHON) -m pytest backend/tests -m 'not integration and not scenario and not docker' -q
+	$(PYTHON) -m pytest backend/tests simulator/tests -m 'not integration and not scenario and not docker' -q
 
 test-integration:
 	$(COMPOSE) run --rm api pytest backend/tests/integration -q

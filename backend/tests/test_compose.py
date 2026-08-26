@@ -56,3 +56,10 @@ def test_compose_forwards_api_and_command_worker_configuration():
     assert set(worker["depends_on"]) == {"postgres", "mosquitto"}
     assert worker["depends_on"]["postgres"]["condition"] == "service_healthy"
     assert worker["depends_on"]["mosquitto"]["condition"] == "service_healthy"
+
+    gateway_sim = compose["services"]["gateway-sim"]
+    assert gateway_sim["environment"]["MQTT_HOST"] == "mosquitto"
+    assert gateway_sim["environment"]["SIMULATOR_LOCATION_COUNT"] == "12000"
+    assert gateway_sim["environment"]["SIMULATOR_CONTROLLER_CAPACITY"] == "32"
+    assert set(gateway_sim["depends_on"]) == {"mosquitto"}
+    assert gateway_sim["depends_on"]["mosquitto"]["condition"] == "service_healthy"
