@@ -9,6 +9,7 @@ from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.auth.seed import seed_default_users
 from backend.app.config import Settings, get_settings
 from backend.app.db.models.device import Controller, Gateway
 from backend.app.db.models.lamp_state import LampState
@@ -457,6 +458,7 @@ async def _seed_simulator(
         ["location_id"],
     )
     await session.flush()
+    await seed_default_users(session, get_settings())
 
     site_count = await session.scalar(
         select(func.count()).select_from(Site).where(Site.code == SITE_CODE)
