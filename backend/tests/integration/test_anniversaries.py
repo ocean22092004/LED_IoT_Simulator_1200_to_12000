@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.anniversaries.lunar import VietnameseLunarCalendarProvider
 from backend.app.anniversaries.service import sync_anniversaries_for_local_date
 from backend.app.auth.service import create_access_token, hash_password
-from backend.app.common.enums import ActivationReason, UserRole
+from backend.app.common.enums import ActivationReason, DesiredState, UserRole
 from backend.app.config import Settings
 from backend.app.db.models.activation import Activation
 from backend.app.db.models.anniversary import AnniversaryRule
@@ -54,10 +54,18 @@ async def test_anniversary_sync_is_idempotent_and_uses_local_midnight(
     )
     session.add(location)
     await session.flush()
+    lamp_state = LampState(location_id=location.id)
+    session.add(lamp_state)
+    await session.flush()
 
     local_date = date(2026, 2, 17)
+    resolution_time = datetime(2026, 2, 17, 3, 0, tzinfo=UTC)
     # Settle any matching rules that may already exist in a developer database.
-    await sync_anniversaries_for_local_date(local_date, session=session)
+    await sync_anniversaries_for_local_date(
+        local_date,
+        session=session,
+        now=resolution_time,
+    )
     session.add(
         AnniversaryRule(
             person_id=person.id,
@@ -69,8 +77,17 @@ async def test_anniversary_sync_is_idempotent_and_uses_local_midnight(
     )
     await session.flush()
 
-    assert await sync_anniversaries_for_local_date(local_date, session=session) == 1
-    assert await sync_anniversaries_for_local_date(local_date, session=session) == 0
+    assert await sync_anniversaries_for_local_date(
+        local_date,
+        session=session,
+        now=resolution_time,
+    ) == 1
+    assert await sync_anniversaries_for_local_date(
+        local_date,
+        session=session,
+        now=resolution_time,
+    ) == 0
+    assert lamp_state.desired_state is DesiredState.ON
 
     activation = await session.scalar(
         select(Activation).where(Activation.location_id == location.id)

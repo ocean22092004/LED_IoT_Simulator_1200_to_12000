@@ -28,6 +28,7 @@ from backend.app.db.models.location import Location
 from backend.app.db.models.person import DeceasedPerson
 from backend.app.db.models.user import User
 from backend.app.db.session import get_session_factory
+from backend.app.lights.resolver import resolve_desired_state
 
 BUSINESS_TIMEZONE = ZoneInfo("Asia/Ho_Chi_Minh")
 
@@ -194,6 +195,7 @@ async def _sync_anniversaries(
     local_date: date,
     session: AsyncSession,
     provider: LunarCalendarProvider,
+    now: datetime,
 ) -> int:
     lunar = provider.from_solar(local_date)
     location_ids = list(
@@ -244,6 +246,8 @@ async def _sync_anniversaries(
         .returning(Activation.id)
     )
     inserted_ids = list(await session.scalars(statement))
+    for location_id in location_ids:
+        await resolve_desired_state(location_id, now, session=session)
     return len(inserted_ids)
 
 
@@ -252,13 +256,20 @@ async def sync_anniversaries_for_local_date(
     *,
     session: AsyncSession | None = None,
     provider: LunarCalendarProvider = default_lunar_calendar,
+    now: datetime | None = None,
 ) -> int:
+    resolution_time = now or datetime.now(UTC)
     if session is not None:
-        return await _sync_anniversaries(local_date, session, provider)
+        return await _sync_anniversaries(local_date, session, provider, resolution_time)
 
     async with get_session_factory()() as owned_session:
         try:
-            inserted = await _sync_anniversaries(local_date, owned_session, provider)
+            inserted = await _sync_anniversaries(
+                local_date,
+                owned_session,
+                provider,
+                resolution_time,
+            )
             await owned_session.commit()
         except Exception:
             await owned_session.rollback()
