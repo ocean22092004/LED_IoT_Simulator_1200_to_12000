@@ -9,6 +9,7 @@ from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.anniversaries.seed import seed_anniversary_rules
 from backend.app.auth.seed import seed_default_users
 from backend.app.config import Settings, get_settings
 from backend.app.db.models.device import Controller, Gateway
@@ -459,6 +460,13 @@ async def _seed_simulator(
     )
     await session.flush()
     await seed_default_users(session, get_settings())
+    await seed_anniversary_rules(
+        session,
+        [
+            (_seed_uuid("location", code), _seed_uuid("person", code))
+            for code in expected_mappings
+        ],
+    )
 
     site_count = await session.scalar(
         select(func.count()).select_from(Site).where(Site.code == SITE_CODE)

@@ -3,8 +3,10 @@ import os
 import subprocess
 import sys
 from collections.abc import AsyncIterator
+from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 import pytest
 import pytest_asyncio
@@ -16,7 +18,9 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.pool import NullPool
 
+from backend.app.anniversaries.lunar import VietnameseLunarCalendarProvider
 from backend.app.config import get_settings
+from backend.app.db.models.anniversary import AnniversaryRule
 from backend.app.db.models.device import Controller, Gateway
 from backend.app.db.models.lamp_state import LampState
 from backend.app.db.models.location import Location
@@ -129,6 +133,19 @@ async def test_seed_1200_has_expected_topology_and_state_defaults(
     assert result.location_count == 1200
     assert result.person_count == 1200
     assert result.lamp_state_count == 1200
+    anniversary_count = await session.scalar(select(func.count()).select_from(AnniversaryRule))
+    assert anniversary_count == 60
+    lunar_today = VietnameseLunarCalendarProvider().from_solar(
+        datetime.now(ZoneInfo("Asia/Ho_Chi_Minh")).date()
+    )
+    matching_anniversary_count = await session.scalar(
+        select(func.count()).select_from(AnniversaryRule).where(
+            AnniversaryRule.lunar_day == lunar_today.day,
+            AnniversaryRule.lunar_month == lunar_today.month,
+            AnniversaryRule.is_leap_month == lunar_today.is_leap_month,
+        )
+    )
+    assert matching_anniversary_count == 60
     await assert_mapping_invariants(session, 1200)
 
     a250 = (
@@ -259,6 +276,7 @@ async def test_seed_rejects_non_deterministic_location_identity(
     session: AsyncSession,
 ) -> None:
     await seed_simulator(1, session=session)
+    await session.execute(delete(AnniversaryRule))
     await session.execute(delete(LampState))
     await session.execute(update(Location).where(Location.code == "A001").values(id=uuid4()))
 
@@ -338,6 +356,8 @@ async def test_seed_12000_uses_extended_zone_codes(
     assert result.location_count == 12000
     assert result.person_count == 12000
     assert result.lamp_state_count == 12000
+    anniversary_count = await session.scalar(select(func.count()).select_from(AnniversaryRule))
+    assert anniversary_count == 600
     await assert_mapping_invariants(session, 12000)
 
     codes = set(
