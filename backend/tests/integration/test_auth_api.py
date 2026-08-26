@@ -37,7 +37,7 @@ async def auth_client(
 ) -> AsyncIterator[AsyncClient]:
     session.add(
         User(
-            username="staff",
+            username="staff-api-test",
             password_hash=hash_password("staff-password"),
             role=UserRole.STAFF,
         )
@@ -69,7 +69,7 @@ async def ready() -> bool:
 async def login(auth_client: AsyncClient) -> str:
     response = await auth_client.post(
         "/api/v1/auth/login",
-        json={"username": "staff", "password": "staff-password"},
+        json={"username": "staff-api-test", "password": "staff-password"},
     )
     assert response.status_code == 200
     body = response.json()
@@ -86,14 +86,14 @@ async def test_login_success_and_me(auth_client: AsyncClient) -> None:
     )
 
     assert response.status_code == 200
-    assert response.json()["username"] == "staff"
+    assert response.json()["username"] == "staff-api-test"
     assert response.json()["role"] == "STAFF"
 
 
 async def test_login_failure_uses_api_error_envelope(auth_client: AsyncClient) -> None:
     response = await auth_client.post(
         "/api/v1/auth/login",
-        json={"username": "staff", "password": "wrong"},
+        json={"username": "staff-api-test", "password": "wrong"},
     )
 
     assert response.status_code == 401
