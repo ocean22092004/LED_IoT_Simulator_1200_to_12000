@@ -21,14 +21,17 @@ from backend.app.mqtt.consumer import (
     handle_heartbeat,
     handle_presence,
     handle_snapshot,
+    handle_telemetry,
 )
 from backend.app.mqtt.schemas import (
     AckMessage,
+    ChannelTelemetry,
     ControllerHeartbeat,
     ControllerSnapshotMessage,
     HeartbeatMessage,
     PresenceMessage,
     SnapshotMessage,
+    TelemetryMessage,
 )
 from backend.tests.integration.conftest import MappedTopology
 
@@ -188,6 +191,57 @@ async def test_burned_lamp_ack_marks_health_suspected_failed(
     assert lamp.controller_output_state is ControllerOutputState.ON
     assert lamp.lamp_health is LampHealth.SUSPECTED_FAILED
     assert lamp.current_ma == Decimal("0.00")
+
+
+async def test_burned_lamp_telemetry_marks_health_suspected_failed(
+    session: AsyncSession,
+    mapped_topology: MappedTopology,
+) -> None:
+    burned = await create_lamp(
+        session,
+        mapped_topology,
+        "TELEMETRY-BURNED",
+        11,
+        actual=ActualState.ON,
+    )
+    off = await create_lamp(
+        session,
+        mapped_topology,
+        "TELEMETRY-OFF",
+        12,
+        actual=ActualState.OFF,
+    )
+    off.lamp_health = LampHealth.OK
+
+    await handle_telemetry(
+        TelemetryMessage(
+            gateway_code="GW-A",
+            controller_code="CTRL-A-01",
+            occurred_at=NOW,
+            channels=[
+                ChannelTelemetry(
+                    channel=11,
+                    output_state=ActualState.ON,
+                    current_ma=0.0,
+                ),
+                ChannelTelemetry(
+                    channel=12,
+                    output_state=ActualState.OFF,
+                    current_ma=0.0,
+                ),
+            ],
+        ),
+        site_code="SITE-TEST",
+        received_at=NOW,
+        session=session,
+    )
+
+    assert burned.actual_state is ActualState.ON
+    assert burned.controller_output_state is ControllerOutputState.ON
+    assert burned.lamp_health is LampHealth.SUSPECTED_FAILED
+    assert burned.current_ma == Decimal("0.00")
+    assert off.actual_state is ActualState.OFF
+    assert off.lamp_health is LampHealth.OK
 
 
 async def test_snapshot_updates_every_online_controller_channel(

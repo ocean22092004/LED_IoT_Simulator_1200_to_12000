@@ -30,6 +30,7 @@ from backend.app.mqtt.schemas import (
     HeartbeatMessage,
     PresenceMessage,
     SnapshotMessage,
+    TelemetryMessage,
 )
 
 
@@ -492,6 +493,89 @@ async def handle_snapshot(
             raise
 
 
+async def _handle_telemetry(
+    payload: TelemetryMessage,
+    site_code: str | None,
+    received_at: datetime,
+    session: AsyncSession,
+) -> None:
+    gateway, site = await _find_gateway(session, payload.gateway_code, site_code)
+    controller = await _find_controller(session, gateway, payload.controller_code)
+    gateway.status = DeviceStatus.ONLINE
+    gateway.last_seen_at = received_at
+    controller.status = DeviceStatus.ONLINE
+    controller.last_seen_at = received_at
+
+    reports = {report.channel: report for report in payload.channels}
+    if len(reports) != len(payload.channels):
+        raise ValueError("telemetry channel numbers must be unique")
+    rows = await _lamp_states_for_controller(session, controller.id)
+    locations_by_channel = {channel: lamp for lamp, channel in rows}
+    unknown_channels = set(reports) - set(locations_by_channel)
+    if unknown_channels:
+        raise ValueError(
+            f"telemetry contains unmapped channels: {sorted(unknown_channels)}"
+        )
+
+    for channel, report in reports.items():
+        lamp = locations_by_channel[channel]
+        current = Decimal(str(report.current_ma)) if report.current_ma is not None else None
+        if report.output_state is ActualState.UNKNOWN:
+            health = LampHealth.UNKNOWN
+            output_state = ControllerOutputState.UNKNOWN
+        elif report.output_state is ActualState.ON:
+            health = (
+                LampHealth.SUSPECTED_FAILED
+                if current is not None and current <= 0
+                else LampHealth.OK
+            )
+            output_state = ControllerOutputState.ON
+        else:
+            # Near-zero current while output is OFF cannot diagnose a failed lamp.
+            health = lamp.lamp_health
+            output_state = ControllerOutputState.OFF
+        _apply_lamp_report(
+            lamp,
+            actual_state=report.output_state,
+            output_state=output_state,
+            health=health,
+            current_ma=current,
+            occurred_at=payload.occurred_at,
+        )
+
+    _record_event(
+        session,
+        site=site,
+        gateway=gateway,
+        controller=controller,
+        event_type="TELEMETRY",
+        occurred_at=payload.occurred_at,
+        received_at=received_at,
+        payload=payload,
+    )
+    await session.flush()
+
+
+async def handle_telemetry(
+    payload: TelemetryMessage,
+    *,
+    site_code: str | None = None,
+    received_at: datetime | None = None,
+    session: AsyncSession | None = None,
+) -> None:
+    received = _received_at(received_at)
+    if session is not None:
+        await _handle_telemetry(payload, site_code, received, session)
+        return
+    async with get_session_factory()() as owned_session:
+        try:
+            await _handle_telemetry(payload, site_code, received, owned_session)
+            await owned_session.commit()
+        except Exception:
+            await owned_session.rollback()
+            raise
+
+
 def parse_device_topic(topic: str) -> tuple[str, str, str]:
     parts = topic.split("/")
     if (
@@ -539,6 +623,15 @@ async def route_device_message(topic: str, payload: bytes) -> bool:
         if snapshot.gateway_code != gateway_code:
             raise ValueError("snapshot gateway does not match MQTT topic")
         await handle_snapshot(snapshot, site_code=site_code)
+        return True
+    if event.startswith("controllers/") and event.endswith("/telemetry"):
+        topic_controller = event.split("/")[1]
+        telemetry = TelemetryMessage.model_validate_json(payload)
+        if telemetry.gateway_code != gateway_code:
+            raise ValueError("telemetry gateway does not match MQTT topic")
+        if telemetry.controller_code != topic_controller:
+            raise ValueError("telemetry controller does not match MQTT topic")
+        await handle_telemetry(telemetry, site_code=site_code)
         return True
     return False
 

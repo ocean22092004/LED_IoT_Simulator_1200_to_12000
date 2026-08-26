@@ -94,3 +94,19 @@ class PresenceMessage(DeviceMessage):
     gateway_code: str = Field(min_length=1)
     status: DeviceMessageStatus
     occurred_at: datetime
+
+
+class ChannelTelemetry(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    channel: ChannelNumber
+    output_state: ActualState
+    current_ma: float | None
+
+
+class TelemetryMessage(DeviceMessage):
+    schema_version: Literal[1] = 1
+    gateway_code: str = Field(min_length=1)
+    controller_code: str = Field(min_length=1)
+    occurred_at: datetime
+    channels: list[ChannelTelemetry]

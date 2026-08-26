@@ -13,6 +13,9 @@ def test_parse_device_topic_extracts_site_gateway_and_event() -> None:
     assert parse_device_topic(
         "memorial/v1/sites/SITE-001/gateways/GW-A/acks"
     ) == ("SITE-001", "GW-A", "acks")
+    assert parse_device_topic(
+        "memorial/v1/sites/SITE-001/gateways/GW-A/controllers/CTRL-A-04/telemetry"
+    ) == ("SITE-001", "GW-A", "controllers/CTRL-A-04/telemetry")
 
 
 @pytest.mark.parametrize(
