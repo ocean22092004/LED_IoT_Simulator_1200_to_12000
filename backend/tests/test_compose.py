@@ -9,7 +9,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 @pytest.mark.docker
-def test_compose_forwards_api_configuration_and_only_gates_api_on_postgres():
+def test_compose_forwards_api_and_command_worker_configuration():
     environment = os.environ | {
         "DATABASE_URL": "postgresql+asyncpg://override:override@db.example:5432/override",
         "JWT_EXPIRE_MINUTES": "321",
@@ -48,3 +48,11 @@ def test_compose_forwards_api_configuration_and_only_gates_api_on_postgres():
         if key in api["environment"]
     } == expected_environment
     assert set(api["depends_on"]) == {"postgres"}
+
+    worker = compose["services"]["command-worker"]
+    assert worker["command"] == ["python", "-m", "backend.app.workers.command_worker"]
+    assert worker["environment"]["DATABASE_URL"] == environment["DATABASE_URL"]
+    assert worker["environment"]["MQTT_HOST"] == "mosquitto"
+    assert set(worker["depends_on"]) == {"postgres", "mosquitto"}
+    assert worker["depends_on"]["postgres"]["condition"] == "service_healthy"
+    assert worker["depends_on"]["mosquitto"]["condition"] == "service_healthy"

@@ -65,6 +65,24 @@ services:
       timeout: 4s
       retries: 20
 
+  command-worker:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://memorial:memorial@postgres:5432/memorial}
+      MQTT_HOST: ${MQTT_HOST:-mosquitto}
+      MQTT_PORT: ${MQTT_PORT:-1883}
+      MQTT_USERNAME: ${MQTT_USERNAME:-memorial}
+      MQTT_PASSWORD: ${MQTT_PASSWORD:-change-me}
+    command: ["python", "-m", "backend.app.workers.command_worker"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mosquitto:
+        condition: service_healthy
+    restart: unless-stopped
+
 volumes:
   postgres-data:
   mosquitto-data:
