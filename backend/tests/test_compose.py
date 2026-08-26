@@ -20,6 +20,8 @@ def test_compose_forwards_api_and_command_worker_configuration():
         "DEVICE_HEARTBEAT_SECONDS": "7",
         "DEVICE_OFFLINE_AFTER_SECONDS": "21",
         "COMMAND_ACK_TIMEOUT_SECONDS": "9",
+        "SIMULATOR_INTERNAL_URL": "http://sim-control.example:9090",
+        "SIMULATOR_CONTROL_PORT": "9090",
     }
     completed = subprocess.run(
         ["docker", "compose", "config"],
@@ -41,6 +43,7 @@ def test_compose_forwards_api_and_command_worker_configuration():
         "DEVICE_HEARTBEAT_SECONDS": "7",
         "DEVICE_OFFLINE_AFTER_SECONDS": "21",
         "COMMAND_ACK_TIMEOUT_SECONDS": "9",
+        "SIMULATOR_INTERNAL_URL": "http://sim-control.example:9090",
     }
     assert {
         key: api["environment"][key]
@@ -77,6 +80,9 @@ def test_compose_forwards_api_and_command_worker_configuration():
     assert gateway_sim["environment"]["MQTT_HOST"] == "mosquitto"
     assert gateway_sim["environment"]["SIMULATOR_LOCATION_COUNT"] == "12000"
     assert gateway_sim["environment"]["SIMULATOR_CONTROLLER_CAPACITY"] == "32"
+    assert gateway_sim["environment"]["SIMULATOR_CONTROL_PORT"] == "9090"
+    assert gateway_sim["expose"] == ["9090"]
+    assert "healthcheck" in gateway_sim
     assert "DATABASE_URL" not in gateway_sim["environment"]
     assert set(gateway_sim["depends_on"]) == {"device-consumer", "mosquitto"}
     assert gateway_sim["depends_on"]["device-consumer"]["condition"] == "service_healthy"

@@ -46,6 +46,7 @@ services:
       STAFF_PASSWORD: ${STAFF_PASSWORD:-change-me}
       TECH_PASSWORD: ${TECH_PASSWORD:-change-me}
       SIMULATOR_ADMIN_ENABLED: ${SIMULATOR_ADMIN_ENABLED:-true}
+      SIMULATOR_INTERNAL_URL: ${SIMULATOR_INTERNAL_URL:-http://gateway-sim:8081}
       SIMULATOR_LOCATION_COUNT: ${SIMULATOR_LOCATION_COUNT:-1200}
       SIMULATOR_ZONES: ${SIMULATOR_ZONES:-A,B,C,D}
       SIMULATOR_LOCATIONS_PER_ZONE: ${SIMULATOR_LOCATIONS_PER_ZONE:-300}
@@ -140,12 +141,21 @@ services:
       SIMULATOR_CONTROLLER_CAPACITY: ${SIMULATOR_CONTROLLER_CAPACITY:-64}
       SIMULATOR_ACK_DROP_RATE: ${SIMULATOR_ACK_DROP_RATE:-0.0}
       SIMULATOR_COMMAND_LATENCY_MS: ${SIMULATOR_COMMAND_LATENCY_MS:-0}
+      SIMULATOR_CONTROL_HOST: ${SIMULATOR_CONTROL_HOST:-0.0.0.0}
+      SIMULATOR_CONTROL_PORT: ${SIMULATOR_CONTROL_PORT:-8081}
       DEVICE_HEARTBEAT_SECONDS: ${DEVICE_HEARTBEAT_SECONDS:-5}
+    expose:
+      - "${SIMULATOR_CONTROL_PORT:-8081}"
     depends_on:
       device-consumer:
         condition: service_healthy
       mosquitto:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import os, urllib.request; urllib.request.urlopen('http://127.0.0.1:' + os.getenv('SIMULATOR_CONTROL_PORT', '8081') + '/health/live', timeout=2)\""]
+      interval: 3s
+      timeout: 4s
+      retries: 20
     restart: unless-stopped
 
 volumes:

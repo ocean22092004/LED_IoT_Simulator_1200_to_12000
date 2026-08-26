@@ -35,6 +35,15 @@ def snapshot_topic(site_code: str, gateway_code: str) -> str:
     return _gateway_topic(site_code, gateway_code, "snapshot")
 
 
+def controller_telemetry_topic(
+    site_code: str,
+    gateway_code: str,
+    controller_code: str,
+) -> str:
+    controller = _segment(controller_code, "controller_code")
+    return f"{_gateway_topic(site_code, gateway_code, 'controllers')}/{controller}/telemetry"
+
+
 def ack_topic_filter() -> str:
     return f"{TOPIC_PREFIX}/sites/+/gateways/+/acks"
 

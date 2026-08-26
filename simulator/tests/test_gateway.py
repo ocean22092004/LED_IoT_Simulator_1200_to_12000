@@ -12,6 +12,7 @@ from simulator.memorial_sim.controller import (
     FieldBusResult,
 )
 from simulator.memorial_sim.gateway import GatewaySimulator
+from simulator.memorial_sim.lamp import ChannelState
 from simulator.memorial_sim.main import build_gateway_definitions
 from simulator.memorial_sim.mqtt_client import IncomingMessage, LastWill
 from simulator.memorial_sim.schemas import CommandMessage
@@ -76,6 +77,15 @@ class RecordingFieldBus:
 
     async def snapshot(self) -> list[ControllerSnapshot]:
         return [self.controller.snapshot()]
+
+    def get_channel_state(
+        self,
+        controller_code: str,
+        channel: int,
+    ) -> ChannelState | None:
+        if controller_code != self.controller.code:
+            return None
+        return self.controller.channels.get(channel)
 
 
 def command_payload(

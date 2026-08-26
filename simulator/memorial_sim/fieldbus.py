@@ -7,6 +7,7 @@ from simulator.memorial_sim.controller import (
     ControllerSnapshot,
     FieldBusResult,
 )
+from simulator.memorial_sim.lamp import ChannelState
 
 
 class FieldBus(Protocol):
@@ -19,6 +20,12 @@ class FieldBus(Protocol):
     ) -> FieldBusResult: ...
 
     async def snapshot(self) -> list[ControllerSnapshot]: ...
+
+    def get_channel_state(
+        self,
+        controller_code: str,
+        channel: int,
+    ) -> ChannelState | None: ...
 
 
 class SimulatedFieldBus:
@@ -60,3 +67,13 @@ class SimulatedFieldBus:
                 key=lambda value: value.code,
             )
         ]
+
+    def get_channel_state(
+        self,
+        controller_code: str,
+        channel: int,
+    ) -> ChannelState | None:
+        controller = self.controllers.get(controller_code)
+        if controller is None:
+            return None
+        return controller.channels.get(channel)

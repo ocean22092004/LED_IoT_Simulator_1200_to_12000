@@ -13,4 +13,6 @@ COPY simulator ./simulator
 
 RUN python -m pip install --no-cache-dir '.[dev]'
 
+EXPOSE 8081
+
 CMD ["python", "-m", "simulator.memorial_sim.main"]

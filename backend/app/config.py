@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     tech_password: SecretStr = SecretStr("change-me")
 
     simulator_admin_enabled: bool = True
+    simulator_internal_url: str = "http://gateway-sim:8081"
     simulator_location_count: int = Field(default=1200, gt=0)
     simulator_zones: str = "A,B,C,D"
     simulator_locations_per_zone: int = Field(default=300, gt=0)

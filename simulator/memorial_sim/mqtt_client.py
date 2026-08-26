@@ -124,8 +124,11 @@ class PahoGatewayMQTTClient:
     async def connect(self, last_will: LastWill) -> None:
         self._loop = asyncio.get_running_loop()
         self._connect_future = self._loop.create_future()
-        self._message_queue = asyncio.Queue()
-        self._reconnect_queue = asyncio.Queue()
+        if self._message_queue is None:
+            self._message_queue = asyncio.Queue()
+        if self._reconnect_queue is None:
+            self._reconnect_queue = asyncio.Queue()
+        self._has_connected = False
         try:
             await asyncio.to_thread(self._connect_sync, last_will)
             await asyncio.wait_for(self._connect_future, timeout=10)
@@ -179,3 +182,4 @@ class PahoGatewayMQTTClient:
 
     async def disconnect(self) -> None:
         await asyncio.to_thread(self._disconnect_sync)
+        self._has_connected = False

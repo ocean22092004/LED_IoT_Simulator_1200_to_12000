@@ -16,6 +16,7 @@ from backend.app.config import Settings, get_settings
 from backend.app.db.session import database_is_ready
 from backend.app.locations.router import person_router, zone_router
 from backend.app.locations.router import router as location_router
+from backend.app.simulator.router import router as simulator_router
 
 ReadinessProbe = Callable[[], Awaitable[bool]]
 
@@ -36,6 +37,7 @@ def create_app(
     app.include_router(location_router)
     app.include_router(zone_router)
     app.include_router(person_router)
+    app.include_router(simulator_router)
 
     @app.get("/health/live")
     async def health_live() -> dict[str, str]:

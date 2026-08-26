@@ -2,10 +2,16 @@ import asyncio
 from dataclasses import dataclass
 from math import ceil
 
+import uvicorn
 from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from simulator.memorial_sim.controller import ControllerSimulator
+from simulator.memorial_sim.faults import (
+    SimulatorControlPlane,
+    build_location_targets,
+    create_control_app,
+)
 from simulator.memorial_sim.fieldbus import SimulatedFieldBus
 from simulator.memorial_sim.gateway import GatewaySimulator
 from simulator.memorial_sim.mqtt_client import PahoGatewayMQTTClient
@@ -28,6 +34,8 @@ class SimulatorSettings(BaseSettings):
     simulator_controller_capacity: int = Field(default=64, gt=0)
     simulator_ack_drop_rate: float = Field(default=0.0, ge=0.0, le=1.0)
     simulator_command_latency_ms: int = Field(default=0, ge=0)
+    simulator_control_host: str = "0.0.0.0"
+    simulator_control_port: int = Field(default=8081, ge=1, le=65535)
     device_heartbeat_seconds: int = Field(default=5, gt=0)
 
 
@@ -105,7 +113,38 @@ async def run_simulator(settings: SimulatorSettings | None = None) -> None:
         )
         for definition in definitions
     ]
-    await asyncio.gather(*(gateway.run() for gateway in gateways))
+    controller_gateways = {
+        controller.code: definition.gateway_code
+        for definition in definitions
+        for controller in definition.controllers
+    }
+    control_plane = SimulatorControlPlane(
+        gateways=gateways,
+        controllers=(
+            controller
+            for definition in definitions
+            for controller in definition.controllers
+        ),
+        controller_gateways=controller_gateways,
+        locations=build_location_targets(
+            location_count=config.simulator_location_count,
+            locations_per_zone=config.simulator_locations_per_zone,
+            controller_capacity=config.simulator_controller_capacity,
+        ),
+    )
+    control_server = uvicorn.Server(
+        uvicorn.Config(
+            create_control_app(control_plane),
+            host=config.simulator_control_host,
+            port=config.simulator_control_port,
+            log_level="info",
+        )
+    )
+    await asyncio.gather(*(gateway.start() for gateway in gateways))
+    await asyncio.gather(
+        *(gateway.run() for gateway in gateways),
+        control_server.serve(),
+    )
 
 
 def main() -> None:

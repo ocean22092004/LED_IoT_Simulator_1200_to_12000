@@ -12,6 +12,7 @@ from backend.app.common.enums import ActualState, DesiredState
 from backend.app.mqtt.topics import (
     ack_topic,
     command_topic,
+    controller_telemetry_topic,
     heartbeat_topic,
     presence_topic,
     snapshot_topic,
@@ -20,6 +21,7 @@ from simulator.memorial_sim.fieldbus import FieldBus
 from simulator.memorial_sim.mqtt_client import GatewayMQTTClient, LastWill
 from simulator.memorial_sim.schemas import (
     AckMessage,
+    ChannelTelemetry,
     CommandMessage,
     ControllerHeartbeat,
     ControllerSnapshotMessage,
@@ -27,6 +29,7 @@ from simulator.memorial_sim.schemas import (
     HeartbeatMessage,
     PresenceMessage,
     SnapshotMessage,
+    TelemetryMessage,
 )
 
 MINIMUM_DEDUPE_SIZE = 1_000
@@ -66,6 +69,12 @@ class GatewaySimulator:
         self._random = random_source or random.Random()
         self._started_at = self._monotonic()
         self._dedupe: OrderedDict[UUID, tuple[float, AckMessage]] = OrderedDict()
+        self._online = False
+        self._connection_lock = asyncio.Lock()
+
+    @property
+    def is_online(self) -> bool:
+        return self._online
 
     def _presence(self, status: DeviceStatus) -> PresenceMessage:
         return PresenceMessage(
@@ -122,22 +131,70 @@ class GatewaySimulator:
             retain=False,
         )
 
+    async def publish_channel_telemetry(
+        self,
+        controller_code: str,
+        channel: int,
+    ) -> None:
+        channel_state = self.fieldbus.get_channel_state(controller_code, channel)
+        if channel_state is None:
+            raise ValueError(f"channel {channel} was not found on {controller_code!r}")
+        message = TelemetryMessage(
+            gateway_code=self.gateway_code,
+            controller_code=controller_code,
+            occurred_at=self._now(),
+            channels=[
+                ChannelTelemetry(
+                    channel=channel,
+                    output_state=(
+                        ActualState.ON if channel_state.output_on else ActualState.OFF
+                    ),
+                    current_ma=channel_state.current_ma,
+                )
+            ],
+        )
+        await self.mqtt.publish(
+            controller_telemetry_topic(
+                self.site_code,
+                self.gateway_code,
+                controller_code,
+            ),
+            message.model_dump_json(),
+            qos=1,
+            retain=False,
+        )
+
     async def _announce_connected(self) -> None:
         await self.mqtt.subscribe(command_topic(self.site_code, self.gateway_code), qos=1)
         await self._publish_presence("ONLINE")
         await self.publish_snapshot()
 
     async def start(self) -> None:
-        offline = self._presence("OFFLINE")
-        await self.mqtt.connect(
-            LastWill(
-                topic=presence_topic(self.site_code, self.gateway_code),
-                payload=offline.model_dump_json(),
-                qos=1,
-                retain=True,
+        await self.set_online(True)
+
+    async def set_online(self, online: bool) -> None:
+        async with self._connection_lock:
+            if online == self._online:
+                return
+            if not online:
+                try:
+                    await self._publish_presence("OFFLINE")
+                finally:
+                    await self.mqtt.disconnect()
+                    self._online = False
+                return
+
+            offline = self._presence("OFFLINE")
+            await self.mqtt.connect(
+                LastWill(
+                    topic=presence_topic(self.site_code, self.gateway_code),
+                    payload=offline.model_dump_json(),
+                    qos=1,
+                    retain=True,
+                )
             )
-        )
-        await self._announce_connected()
+            await self._announce_connected()
+            self._online = True
 
     def _remember(self, ack: AckMessage) -> None:
         observed_at = self._monotonic()
@@ -206,6 +263,8 @@ class GatewaySimulator:
     async def _heartbeat_loop(self) -> None:
         while True:
             await asyncio.sleep(self.heartbeat_seconds)
+            if not self._online:
+                continue
             try:
                 await self.publish_heartbeat()
             except (ConnectionError, OSError, TimeoutError):
@@ -226,6 +285,8 @@ class GatewaySimulator:
             )
         finally:
             try:
-                await self._publish_presence("OFFLINE")
+                if self._online:
+                    await self._publish_presence("OFFLINE")
             finally:
                 await self.mqtt.disconnect()
+                self._online = False

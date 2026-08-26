@@ -11,7 +11,9 @@ def test_settings_uses_vietnam_timezone_by_default(monkeypatch):
 
 def test_settings_reads_environment_override(monkeypatch):
     monkeypatch.setenv("SIMULATOR_LOCATION_COUNT", "12000")
+    monkeypatch.setenv("SIMULATOR_INTERNAL_URL", "http://simulator.internal:9090")
 
     settings = Settings(_env_file=None)
 
     assert settings.simulator_location_count == 12000
+    assert settings.simulator_internal_url == "http://simulator.internal:9090"
