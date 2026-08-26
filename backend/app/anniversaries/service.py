@@ -28,6 +28,7 @@ from backend.app.db.models.location import Location
 from backend.app.db.models.person import DeceasedPerson
 from backend.app.db.models.user import User
 from backend.app.db.session import get_session_factory
+from backend.app.lights.reconciliation import reconcile_location
 from backend.app.lights.resolver import resolve_desired_state
 
 BUSINESS_TIMEZONE = ZoneInfo("Asia/Ho_Chi_Minh")
@@ -247,7 +248,14 @@ async def _sync_anniversaries(
     )
     inserted_ids = list(await session.scalars(statement))
     for location_id in location_ids:
-        await resolve_desired_state(location_id, now, session=session)
+        resolution = await resolve_desired_state(location_id, now, session=session)
+        if resolution.changed:
+            await reconcile_location(
+                location_id,
+                reason=ActivationReason.ANNIVERSARY.value,
+                now=now,
+                session=session,
+            )
     return len(inserted_ids)
 
 

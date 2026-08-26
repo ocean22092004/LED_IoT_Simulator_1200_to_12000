@@ -11,6 +11,7 @@ from backend.app.db.models.activation import Activation
 from backend.app.db.models.location import Location
 from backend.app.db.models.user import User
 from backend.app.db.session import get_session_factory
+from backend.app.lights.reconciliation import reconcile_location
 from backend.app.lights.resolver import resolve_desired_state
 
 
@@ -48,7 +49,14 @@ async def _create_activation(
             )
         )
         if existing is not None:
-            await resolve_desired_state(location_id, now, session=session)
+            resolution = await resolve_desired_state(location_id, now, session=session)
+            if resolution.changed:
+                await reconcile_location(
+                    location_id,
+                    reason=existing.reason.value,
+                    now=now,
+                    session=session,
+                )
             return existing
 
     activation = Activation(
@@ -62,7 +70,14 @@ async def _create_activation(
     )
     session.add(activation)
     await session.flush()
-    await resolve_desired_state(location_id, now, session=session)
+    resolution = await resolve_desired_state(location_id, now, session=session)
+    if resolution.changed:
+        await reconcile_location(
+            location_id,
+            reason=reason.value,
+            now=now,
+            session=session,
+        )
     return activation
 
 
@@ -138,7 +153,18 @@ async def _end_activation(
                 "ended_by_user_id": str(actor.id),
             }
         await session.flush()
-    await resolve_desired_state(activation.location_id, ended_at, session=session)
+    resolution = await resolve_desired_state(
+        activation.location_id,
+        ended_at,
+        session=session,
+    )
+    if resolution.changed:
+        await reconcile_location(
+            activation.location_id,
+            reason=activation.reason.value,
+            now=ended_at,
+            session=session,
+        )
     return activation
 
 
