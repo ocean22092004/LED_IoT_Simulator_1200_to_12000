@@ -1,6 +1,8 @@
 from typing import Any
 
 from fastapi import Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 
@@ -29,6 +31,24 @@ async def api_error_handler(_request: Request, exception: Exception) -> JSONResp
                 "code": exception.code,
                 "message": exception.message,
                 "details": exception.details,
+            }
+        },
+    )
+
+
+async def request_validation_error_handler(
+    _request: Request,
+    exception: Exception,
+) -> JSONResponse:
+    if not isinstance(exception, RequestValidationError):
+        raise exception
+    return JSONResponse(
+        status_code=422,
+        content={
+            "error": {
+                "code": "REQUEST_VALIDATION_ERROR",
+                "message": "Request validation failed",
+                "details": {"errors": jsonable_encoder(exception.errors())},
             }
         },
     )

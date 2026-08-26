@@ -1,12 +1,19 @@
 from collections.abc import Awaitable, Callable
 
 from fastapi import FastAPI
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from backend.app.auth.router import router as auth_router
-from backend.app.common.errors import APIError, api_error_handler
+from backend.app.common.errors import (
+    APIError,
+    api_error_handler,
+    request_validation_error_handler,
+)
 from backend.app.config import Settings, get_settings
 from backend.app.db.session import database_is_ready
+from backend.app.locations.router import person_router, zone_router
+from backend.app.locations.router import router as location_router
 
 ReadinessProbe = Callable[[], Awaitable[bool]]
 
@@ -20,7 +27,11 @@ def create_app(
     app = FastAPI(title="Memorial LED Control Simulator")
     app.state.settings = app_settings
     app.add_exception_handler(APIError, api_error_handler)
+    app.add_exception_handler(RequestValidationError, request_validation_error_handler)
     app.include_router(auth_router)
+    app.include_router(location_router)
+    app.include_router(zone_router)
+    app.include_router(person_router)
 
     @app.get("/health/live")
     async def health_live() -> dict[str, str]:
