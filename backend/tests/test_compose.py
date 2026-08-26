@@ -57,9 +57,21 @@ def test_compose_forwards_api_and_command_worker_configuration():
     assert worker["depends_on"]["postgres"]["condition"] == "service_healthy"
     assert worker["depends_on"]["mosquitto"]["condition"] == "service_healthy"
 
+    consumer = compose["services"]["device-consumer"]
+    assert consumer["command"] == [
+        "python",
+        "-m",
+        "backend.app.workers.device_consumer",
+    ]
+    assert consumer["environment"]["DATABASE_URL"] == environment["DATABASE_URL"]
+    assert consumer["environment"]["MQTT_HOST"] == "mosquitto"
+    assert set(consumer["depends_on"]) == {"postgres", "mosquitto"}
+
     gateway_sim = compose["services"]["gateway-sim"]
     assert gateway_sim["environment"]["MQTT_HOST"] == "mosquitto"
     assert gateway_sim["environment"]["SIMULATOR_LOCATION_COUNT"] == "12000"
     assert gateway_sim["environment"]["SIMULATOR_CONTROLLER_CAPACITY"] == "32"
-    assert set(gateway_sim["depends_on"]) == {"mosquitto"}
+    assert "DATABASE_URL" not in gateway_sim["environment"]
+    assert set(gateway_sim["depends_on"]) == {"device-consumer", "mosquitto"}
+    assert gateway_sim["depends_on"]["device-consumer"]["condition"] == "service_healthy"
     assert gateway_sim["depends_on"]["mosquitto"]["condition"] == "service_healthy"

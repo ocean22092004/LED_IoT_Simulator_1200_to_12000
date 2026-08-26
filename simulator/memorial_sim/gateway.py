@@ -8,7 +8,7 @@ from uuid import UUID
 
 from pydantic import ValidationError
 
-from backend.app.common.enums import DesiredState
+from backend.app.common.enums import ActualState, DesiredState
 from backend.app.mqtt.topics import (
     ack_topic,
     command_topic,
@@ -188,7 +188,7 @@ class GatewaySimulator:
             controller_code=result.controller_code,
             channel=result.channel,
             accepted=result.accepted,
-            actual_output_state=result.actual_output_state,
+            actual_output_state=ActualState(result.actual_output_state),
             current_ma=result.current_ma,
             error_code=result.error_code,
             error_message=result.error_message,
