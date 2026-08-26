@@ -4,6 +4,7 @@ from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
+from backend.app.activations.router import router as activation_router
 from backend.app.anniversaries.router import router as anniversary_router
 from backend.app.auth.router import router as auth_router
 from backend.app.common.errors import (
@@ -30,6 +31,7 @@ def create_app(
     app.add_exception_handler(APIError, api_error_handler)
     app.add_exception_handler(RequestValidationError, request_validation_error_handler)
     app.include_router(auth_router)
+    app.include_router(activation_router)
     app.include_router(anniversary_router)
     app.include_router(location_router)
     app.include_router(zone_router)

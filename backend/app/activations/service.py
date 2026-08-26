@@ -1,10 +1,12 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from hashlib import sha256
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.audit.service import record_audit
 from backend.app.common.enums import ActivationReason
 from backend.app.common.errors import APIError
 from backend.app.db.models.activation import Activation
@@ -249,3 +251,203 @@ async def expire_activations(
             await owned_session.rollback()
             raise
     return expired
+
+
+async def start_visit(
+    session: AsyncSession,
+    *,
+    location_id: UUID,
+    duration_minutes: int | None,
+    actor: User,
+    idempotency_key: str | None = None,
+    now: datetime | None = None,
+) -> tuple[Activation, bool]:
+    started_at = now or datetime.now(UTC)
+    _require_aware(started_at, "now")
+    location = await session.scalar(
+        select(Location).where(Location.id == location_id).with_for_update()
+    )
+    if location is None:
+        raise APIError(404, "LOCATION_NOT_FOUND", f"Location {location_id} was not found")
+
+    normalized_key = idempotency_key.strip() if idempotency_key is not None else None
+    if normalized_key:
+        existing = await session.scalar(
+            select(Activation)
+            .where(
+                Activation.location_id == location_id,
+                Activation.reason == ActivationReason.VISIT,
+                Activation.created_by_user_id == actor.id,
+                Activation.created_at >= started_at - timedelta(hours=24),
+                Activation.metadata_json["idempotency_key"].as_string() == normalized_key,
+            )
+            .order_by(Activation.created_at.desc())
+        )
+        if existing is not None:
+            return existing, False
+
+    expires_at = (
+        started_at + timedelta(minutes=duration_minutes)
+        if duration_minutes is not None
+        else None
+    )
+    dedupe_key = None
+    if normalized_key:
+        key_hash = sha256(normalized_key.encode()).hexdigest()[:32]
+        dedupe_key = f"visit:{actor.id}:{started_at.date().isoformat()}:{key_hash}"
+    activation = await create_activation(
+        location_id,
+        ActivationReason.VISIT,
+        starts_at=started_at,
+        expires_at=expires_at,
+        actor=actor,
+        metadata={
+            "duration_minutes": duration_minutes,
+            **({"idempotency_key": normalized_key} if normalized_key else {}),
+        },
+        dedupe_key=dedupe_key,
+        now=started_at,
+        session=session,
+    )
+    await record_audit(
+        session,
+        user=actor,
+        action="VISIT_STARTED",
+        entity_type="activation",
+        entity_id=activation.id,
+        metadata={
+            "location_id": str(location_id),
+            "duration_minutes": duration_minutes,
+        },
+    )
+    return activation, True
+
+
+async def end_visit(
+    session: AsyncSession,
+    *,
+    activation_id: UUID,
+    actor: User,
+    now: datetime | None = None,
+) -> tuple[Activation, bool]:
+    ended_at = now or datetime.now(UTC)
+    activation = await session.scalar(
+        select(Activation)
+        .where(Activation.id == activation_id)
+        .with_for_update()
+    )
+    if activation is None:
+        raise APIError(
+            404,
+            "ACTIVATION_NOT_FOUND",
+            f"Activation {activation_id} was not found",
+        )
+    if activation.reason is not ActivationReason.VISIT:
+        raise APIError(422, "ACTIVATION_NOT_VISIT", "Only VISIT activations can be ended here")
+    if activation.ended_at is not None:
+        return activation, False
+    activation = await end_activation(
+        activation.id,
+        actor,
+        ended_at=ended_at,
+        session=session,
+    )
+    await record_audit(
+        session,
+        user=actor,
+        action="VISIT_ENDED",
+        entity_type="activation",
+        entity_id=activation.id,
+        metadata={"location_id": str(activation.location_id)},
+    )
+    return activation, True
+
+
+async def start_manual_on(
+    session: AsyncSession,
+    *,
+    location_id: UUID,
+    actor: User,
+    now: datetime | None = None,
+) -> tuple[Activation, bool]:
+    started_at = now or datetime.now(UTC)
+    location = await session.scalar(
+        select(Location).where(Location.id == location_id).with_for_update()
+    )
+    if location is None:
+        raise APIError(404, "LOCATION_NOT_FOUND", f"Location {location_id} was not found")
+    existing = await session.scalar(
+        select(Activation)
+        .where(
+            Activation.location_id == location_id,
+            Activation.reason == ActivationReason.MANUAL_ON,
+            Activation.starts_at <= started_at,
+            Activation.ended_at.is_(None),
+            or_(Activation.expires_at.is_(None), Activation.expires_at > started_at),
+        )
+        .order_by(Activation.created_at.desc())
+    )
+    if existing is not None:
+        return existing, False
+    activation = await create_activation(
+        location_id,
+        ActivationReason.MANUAL_ON,
+        starts_at=started_at,
+        actor=actor,
+        now=started_at,
+        session=session,
+    )
+    await record_audit(
+        session,
+        user=actor,
+        action="MANUAL_ON_STARTED",
+        entity_type="activation",
+        entity_id=activation.id,
+        metadata={"location_id": str(location_id)},
+    )
+    return activation, True
+
+
+async def end_manual_on(
+    session: AsyncSession,
+    *,
+    location_id: UUID,
+    actor: User,
+    now: datetime | None = None,
+) -> Activation:
+    ended_at = now or datetime.now(UTC)
+    if await session.get(Location, location_id) is None:
+        raise APIError(404, "LOCATION_NOT_FOUND", f"Location {location_id} was not found")
+    activation = await session.scalar(
+        select(Activation)
+        .where(
+            Activation.location_id == location_id,
+            Activation.reason == ActivationReason.MANUAL_ON,
+            Activation.starts_at <= ended_at,
+            Activation.ended_at.is_(None),
+            or_(Activation.expires_at.is_(None), Activation.expires_at > ended_at),
+        )
+        .order_by(Activation.created_at.desc())
+        .with_for_update()
+    )
+    if activation is None:
+        raise APIError(
+            404,
+            "MANUAL_ACTIVATION_NOT_FOUND",
+            f"Location {location_id} has no active manual activation",
+        )
+    activation = await end_activation(
+        activation.id,
+        actor,
+        ended_at=ended_at,
+        session=session,
+    )
+    await record_audit(
+        session,
+        user=actor,
+        action="MANUAL_ON_ENDED",
+        entity_type="activation",
+        entity_id=activation.id,
+        metadata={"location_id": str(location_id)},
+    )
+    return activation
