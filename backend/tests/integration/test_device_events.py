@@ -102,7 +102,12 @@ async def test_ack_success_marks_command_acked_and_updates_actual_state(
     assert lamp.lamp_health is LampHealth.OK
     assert lamp.current_ma == Decimal("42.50")
     assert lamp.last_device_report_at == NOW
-    assert await session.scalar(select(func.count()).select_from(DeviceEvent)) == 1
+    event_count = await session.scalar(
+        select(func.count())
+        .select_from(DeviceEvent)
+        .where(DeviceEvent.location_id == lamp.location_id)
+    )
+    assert event_count == 1
 
 
 async def test_failure_ack_marks_failed_without_false_actual_on(
