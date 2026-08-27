@@ -1,11 +1,17 @@
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
-from typing import Annotated, Self
+from typing import Annotated, Any, Self
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
-from backend.app.common.enums import ActivationReason, ActualState, DesiredState, LampHealth
+from backend.app.common.enums import (
+    ActivationReason,
+    ActualState,
+    CommandStatus,
+    DesiredState,
+    LampHealth,
+)
 
 NonEmptyText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 
@@ -49,6 +55,40 @@ class LightBrief(BaseModel):
     lamp_health: LampHealth
     current_ma: Decimal | None
     active_reasons: list[ActivationReason]
+    last_reported_at: datetime | None
+
+
+class LocationListLightBrief(BaseModel):
+    desired_state: DesiredState
+    actual_state: ActualState
+    lamp_health: LampHealth
+
+
+class ActiveActivationBrief(BaseModel):
+    id: UUID
+    reason: ActivationReason
+    starts_at: datetime
+    expires_at: datetime | None
+
+
+class LocationCommandBrief(BaseModel):
+    id: UUID
+    target_state: DesiredState
+    status: CommandStatus
+    reason: str
+    attempt_count: int
+    last_error: str | None
+    created_at: datetime
+    sent_at: datetime | None
+    acked_at: datetime | None
+
+
+class LocationEventBrief(BaseModel):
+    id: int
+    event_type: str
+    occurred_at: datetime
+    received_at: datetime
+    payload: dict[str, Any]
 
 
 class LocationSummary(BaseModel):
@@ -58,12 +98,23 @@ class LocationSummary(BaseModel):
     zone: ZoneBrief
     person: PersonBrief | None
     hardware: HardwareBrief
+    light: LocationListLightBrief
     is_active: bool
 
 
-class LocationDetail(LocationSummary):
+class LocationDetail(BaseModel):
+    id: UUID
+    site_id: UUID
+    code: str
+    zone: ZoneBrief
+    person: PersonBrief | None
+    hardware: HardwareBrief
+    is_active: bool
     anniversary: AnniversaryBrief | None
     light: LightBrief
+    active_activations: list[ActiveActivationBrief]
+    recent_commands: list[LocationCommandBrief]
+    recent_events: list[LocationEventBrief]
 
 
 class PaginatedLocations(BaseModel):

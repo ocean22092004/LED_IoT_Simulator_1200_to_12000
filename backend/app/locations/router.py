@@ -47,6 +47,7 @@ async def list_locations(
     _user: AuthenticatedUser,
     search: str | None = None,
     site_id: UUID | None = None,
+    controller_id: UUID | None = None,
     page: Annotated[int, Query(ge=1)] = 1,
     page_size: Annotated[int, Query(ge=1, le=200)] = 50,
 ) -> PaginatedLocations:
@@ -55,6 +56,7 @@ async def list_locations(
         search=search,
         site_id=site_id,
         zone_id=None,
+        controller_id=controller_id,
         page=page,
         page_size=page_size,
     )
@@ -116,6 +118,7 @@ async def list_zone_locations(
         search=search,
         site_id=None,
         zone_id=zone_id,
+        controller_id=None,
         page=page,
         page_size=page_size,
     )

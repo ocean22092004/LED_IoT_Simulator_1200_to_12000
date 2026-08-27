@@ -9,3 +9,7 @@ __pycache__
 .coverage
 htmlcov
 docs
+web/node_modules
+web/.next
+web/coverage
+web/*.tsbuildinfo

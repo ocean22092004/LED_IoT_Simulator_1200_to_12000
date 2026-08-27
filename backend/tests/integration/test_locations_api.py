@@ -15,6 +15,7 @@ from backend.app.auth.service import create_access_token, hash_password
 from backend.app.common.enums import (
     ActivationReason,
     ActualState,
+    CommandStatus,
     DesiredState,
     LampHealth,
     UserRole,
@@ -22,7 +23,9 @@ from backend.app.common.enums import (
 from backend.app.config import Settings
 from backend.app.db.models.activation import Activation
 from backend.app.db.models.audit_log import AuditLog
+from backend.app.db.models.command import LightCommand
 from backend.app.db.models.device import Controller, Gateway
+from backend.app.db.models.device_event import DeviceEvent
 from backend.app.db.models.lamp_state import LampState
 from backend.app.db.models.location import Location
 from backend.app.db.models.person import DeceasedPerson
@@ -175,6 +178,31 @@ async def test_exact_code_search_is_first_and_site_scoped(
     body = response.json()
     assert body["total"] == 1
     assert body["items"][0]["code"] == "A250"
+    assert body["items"][0]["light"] == {
+        "desired_state": "ON",
+        "actual_state": "OFF",
+        "lamp_health": "OK",
+    }
+
+
+async def test_location_search_filters_by_controller(
+    location_api: LocationAPIContext,
+) -> None:
+    matching = await location_api.client.get(
+        "/api/v1/locations",
+        params={"controller_id": str(location_api.controller.id)},
+        headers=location_api.headers,
+    )
+    missing = await location_api.client.get(
+        "/api/v1/locations",
+        params={"controller_id": str(uuid4())},
+        headers=location_api.headers,
+    )
+
+    assert matching.status_code == 200
+    assert matching.json()["total"] == 2
+    assert missing.status_code == 200
+    assert missing.json()["total"] == 0
 
 
 @pytest.mark.parametrize("search", ["a250", "trần văn case", "TRẦN VĂN CASE"])
@@ -212,6 +240,84 @@ async def test_location_detail_keeps_desired_and_actual_state_separate(
     assert body["light"]["desired_state"] == "ON"
     assert body["light"]["actual_state"] == "OFF"
     assert body["light"]["active_reasons"] == ["VISIT"]
+    assert body["active_activations"][0]["reason"] == "VISIT"
+    assert body["active_activations"][0]["id"]
+
+
+async def test_location_detail_returns_recent_commands_and_device_events(
+    location_api: LocationAPIContext,
+) -> None:
+    older = datetime(2026, 8, 27, 1, 0, tzinfo=UTC)
+    newer = datetime(2026, 8, 27, 2, 0, tzinfo=UTC)
+    location_api.session.add_all(
+        [
+            LightCommand(
+                location_id=location_api.location.id,
+                gateway_id=location_api.gateway.id,
+                controller_id=location_api.controller.id,
+                channel_number=1,
+                target_state=DesiredState.ON,
+                status=CommandStatus.ACKED,
+                reason="VISIT",
+                next_attempt_at=older,
+                created_at=older,
+                acked_at=older,
+            ),
+            LightCommand(
+                location_id=location_api.location.id,
+                gateway_id=location_api.gateway.id,
+                controller_id=location_api.controller.id,
+                channel_number=1,
+                target_state=DesiredState.OFF,
+                status=CommandStatus.FAILED,
+                reason="VISIT_ENDED",
+                next_attempt_at=newer,
+                created_at=newer,
+                last_error="ACK timeout",
+            ),
+            DeviceEvent(
+                site_id=location_api.site.id,
+                gateway_id=location_api.gateway.id,
+                controller_id=location_api.controller.id,
+                location_id=location_api.location.id,
+                event_type="ACK",
+                occurred_at=older,
+                received_at=older,
+                payload={"accepted": True},
+            ),
+            DeviceEvent(
+                site_id=location_api.site.id,
+                gateway_id=location_api.gateway.id,
+                controller_id=location_api.controller.id,
+                location_id=location_api.location.id,
+                event_type="TELEMETRY",
+                occurred_at=newer,
+                received_at=newer,
+                payload={"current_ma": 0},
+            ),
+        ]
+    )
+    lamp = await location_api.session.get(LampState, location_api.location.id)
+    assert lamp is not None
+    lamp.last_device_report_at = newer
+    await location_api.session.flush()
+
+    response = await location_api.client.get(
+        f"/api/v1/locations/{location_api.location.id}",
+        headers=location_api.headers,
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["light"]["last_reported_at"] == newer.isoformat().replace("+00:00", "Z")
+    assert [item["status"] for item in body["recent_commands"][:2]] == [
+        "FAILED",
+        "ACKED",
+    ]
+    assert [item["event_type"] for item in body["recent_events"][:2]] == [
+        "TELEMETRY",
+        "ACK",
+    ]
 
 
 async def test_location_search_is_paginated(location_api: LocationAPIContext) -> None:

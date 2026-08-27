@@ -27,13 +27,16 @@ class LocationRecord:
     lamp_state: LampState | None
 
 
-def _location_select() -> Select[tuple[Location, Zone, DeceasedPerson, Gateway, Controller]]:
+def _location_select() -> Select[
+    tuple[Location, Zone, DeceasedPerson, Gateway, Controller, LampState]
+]:
     return (
-        select(Location, Zone, DeceasedPerson, Gateway, Controller)
+        select(Location, Zone, DeceasedPerson, Gateway, Controller, LampState)
         .join(Zone, Zone.id == Location.zone_id)
         .outerjoin(DeceasedPerson, DeceasedPerson.id == Location.person_id)
         .join(Gateway, Gateway.id == Location.gateway_id)
         .join(Controller, Controller.id == Location.controller_id)
+        .outerjoin(LampState, LampState.location_id == Location.id)
     )
 
 
@@ -43,6 +46,7 @@ def _to_record(row: Any) -> LocationRecord:
     person = cast(DeceasedPerson | None, row[2])
     gateway = cast(Gateway, row[3])
     controller = cast(Controller, row[4])
+    lamp_state = cast(LampState | None, row[5])
     return LocationRecord(
         location=location,
         zone=zone,
@@ -50,7 +54,7 @@ def _to_record(row: Any) -> LocationRecord:
         gateway=gateway,
         controller=controller,
         anniversary=None,
-        lamp_state=None,
+        lamp_state=lamp_state,
     )
 
 
@@ -97,6 +101,7 @@ async def list_location_records(
     search: str | None,
     site_id: UUID | None,
     zone_id: UUID | None,
+    controller_id: UUID | None,
     page: int,
     page_size: int,
 ) -> tuple[list[LocationRecord], int]:
@@ -114,6 +119,8 @@ async def list_location_records(
         filters.append(Location.site_id == site_id)
     if zone_id is not None:
         filters.append(Location.zone_id == zone_id)
+    if controller_id is not None:
+        filters.append(Location.controller_id == controller_id)
 
     statement = _location_select().where(*filters)
     if normalized_search:

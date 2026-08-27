@@ -1,14 +1,18 @@
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.common.enums import ActualState, DesiredState, LampHealth
 from backend.app.common.errors import APIError
+from backend.app.db.models.activation import Activation
 from backend.app.db.models.audit_log import AuditLog
+from backend.app.db.models.command import LightCommand
 from backend.app.db.models.device import Controller, Gateway
+from backend.app.db.models.device_event import DeviceEvent
 from backend.app.db.models.lamp_state import LampState
 from backend.app.db.models.location import Location
 from backend.app.db.models.person import DeceasedPerson
@@ -22,11 +26,15 @@ from backend.app.locations.repository import (
     list_location_records,
 )
 from backend.app.locations.schemas import (
+    ActiveActivationBrief,
     AnniversaryBrief,
     HardwareBrief,
     LightBrief,
+    LocationCommandBrief,
     LocationCreate,
     LocationDetail,
+    LocationEventBrief,
+    LocationListLightBrief,
     LocationSummary,
     LocationUpdate,
     PaginatedLocations,
@@ -112,6 +120,7 @@ async def _validate_mapping(
 
 
 def _summary(record: LocationRecord) -> LocationSummary:
+    lamp_state = record.lamp_state
     return LocationSummary(
         id=record.location.id,
         site_id=record.location.site_id,
@@ -127,14 +136,54 @@ def _summary(record: LocationRecord) -> LocationSummary:
             controller_code=record.controller.code,
             channel=record.location.channel_number,
         ),
+        light=LocationListLightBrief(
+            desired_state=(
+                lamp_state.desired_state if lamp_state else DesiredState.OFF
+            ),
+            actual_state=(
+                lamp_state.actual_state if lamp_state else ActualState.UNKNOWN
+            ),
+            lamp_health=(
+                lamp_state.lamp_health if lamp_state else LampHealth.UNKNOWN
+            ),
+        ),
         is_active=record.location.is_active,
     )
 
 
 async def _detail(session: AsyncSession, record: LocationRecord) -> LocationDetail:
     lamp_state = record.lamp_state
+    now = datetime.now(UTC)
+    activations = list(
+        await session.scalars(
+            select(Activation)
+            .where(
+                Activation.location_id == record.location.id,
+                Activation.starts_at <= now,
+                Activation.ended_at.is_(None),
+                or_(Activation.expires_at.is_(None), Activation.expires_at > now),
+            )
+            .order_by(Activation.reason, Activation.starts_at, Activation.id)
+        )
+    )
+    commands = list(
+        await session.scalars(
+            select(LightCommand)
+            .where(LightCommand.location_id == record.location.id)
+            .order_by(LightCommand.created_at.desc(), LightCommand.id.desc())
+            .limit(10)
+        )
+    )
+    events = list(
+        await session.scalars(
+            select(DeviceEvent)
+            .where(DeviceEvent.location_id == record.location.id)
+            .order_by(DeviceEvent.occurred_at.desc(), DeviceEvent.id.desc())
+            .limit(10)
+        )
+    )
     return LocationDetail(
-        **_summary(record).model_dump(),
+        **_summary(record).model_dump(exclude={"light"}),
         anniversary=(
             AnniversaryBrief(
                 lunar_day=record.anniversary.lunar_day,
@@ -150,7 +199,43 @@ async def _detail(session: AsyncSession, record: LocationRecord) -> LocationDeta
             lamp_health=lamp_state.lamp_health if lamp_state else LampHealth.UNKNOWN,
             current_ma=lamp_state.current_ma if lamp_state else None,
             active_reasons=await get_active_reasons(session, record.location.id),
+            last_reported_at=(
+                lamp_state.last_device_report_at if lamp_state else None
+            ),
         ),
+        active_activations=[
+            ActiveActivationBrief(
+                id=activation.id,
+                reason=activation.reason,
+                starts_at=activation.starts_at,
+                expires_at=activation.expires_at,
+            )
+            for activation in activations
+        ],
+        recent_commands=[
+            LocationCommandBrief(
+                id=command.id,
+                target_state=command.target_state,
+                status=command.status,
+                reason=command.reason,
+                attempt_count=command.attempt_count,
+                last_error=command.last_error,
+                created_at=command.created_at,
+                sent_at=command.sent_at,
+                acked_at=command.acked_at,
+            )
+            for command in commands
+        ],
+        recent_events=[
+            LocationEventBrief(
+                id=event.id,
+                event_type=event.event_type,
+                occurred_at=event.occurred_at,
+                received_at=event.received_at,
+                payload=event.payload,
+            )
+            for event in events
+        ],
     )
 
 
@@ -160,6 +245,7 @@ async def search_locations(
     search: str | None,
     site_id: UUID | None,
     zone_id: UUID | None,
+    controller_id: UUID | None,
     page: int,
     page_size: int,
 ) -> PaginatedLocations:
@@ -168,6 +254,7 @@ async def search_locations(
         search=search,
         site_id=site_id,
         zone_id=zone_id,
+        controller_id=controller_id,
         page=page,
         page_size=page_size,
     )

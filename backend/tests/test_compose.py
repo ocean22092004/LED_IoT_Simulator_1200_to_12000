@@ -22,6 +22,9 @@ def test_compose_forwards_api_and_command_worker_configuration():
         "COMMAND_ACK_TIMEOUT_SECONDS": "9",
         "SIMULATOR_INTERNAL_URL": "http://sim-control.example:9090",
         "SIMULATOR_CONTROL_PORT": "9090",
+        "FRONTEND_ORIGIN": "http://admin.example:3000",
+        "NEXT_PUBLIC_API_URL": "http://api.example:8000",
+        "NEXT_PUBLIC_WS_URL": "ws://api.example:8000",
     }
     completed = subprocess.run(
         ["docker", "compose", "config"],
@@ -44,6 +47,7 @@ def test_compose_forwards_api_and_command_worker_configuration():
         "DEVICE_OFFLINE_AFTER_SECONDS": "21",
         "COMMAND_ACK_TIMEOUT_SECONDS": "9",
         "SIMULATOR_INTERNAL_URL": "http://sim-control.example:9090",
+        "FRONTEND_ORIGIN": "http://admin.example:3000",
     }
     assert {
         key: api["environment"][key]
@@ -87,3 +91,14 @@ def test_compose_forwards_api_and_command_worker_configuration():
     assert set(gateway_sim["depends_on"]) == {"device-consumer", "mosquitto"}
     assert gateway_sim["depends_on"]["device-consumer"]["condition"] == "service_healthy"
     assert gateway_sim["depends_on"]["mosquitto"]["condition"] == "service_healthy"
+
+    web = compose["services"]["web"]
+    assert web["build"]["args"] == {
+        "NEXT_PUBLIC_API_URL": "http://api.example:8000",
+        "NEXT_PUBLIC_WS_URL": "ws://api.example:8000",
+    }
+    assert web["ports"][0]["published"] == "3000"
+    assert web["ports"][0]["target"] == 3000
+    assert set(web["depends_on"]) == {"api"}
+    assert web["depends_on"]["api"]["condition"] == "service_healthy"
+    assert "healthcheck" in web

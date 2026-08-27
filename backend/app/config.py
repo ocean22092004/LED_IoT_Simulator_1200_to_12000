@@ -13,6 +13,7 @@ class Settings(BaseSettings):
 
     app_env: str = "development"
     app_timezone: str = "Asia/Ho_Chi_Minh"
+    frontend_origin: str = "http://localhost:3000"
     database_url: str = "postgresql+asyncpg://memorial:memorial@localhost:5432/memorial"
 
     mqtt_host: str = "localhost"

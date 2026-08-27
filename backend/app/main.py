@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from backend.app.activations.router import router as activation_router
@@ -16,6 +17,7 @@ from backend.app.common.errors import (
 from backend.app.config import Settings, get_settings
 from backend.app.dashboard.router import router as dashboard_router
 from backend.app.db.session import database_is_ready
+from backend.app.devices.router import router as device_router
 from backend.app.locations.router import person_router, zone_router
 from backend.app.locations.router import router as location_router
 from backend.app.realtime.websocket import (
@@ -48,12 +50,20 @@ def create_app(
     app = FastAPI(title="Memorial LED Control Simulator", lifespan=lifespan)
     app.state.settings = app_settings
     app.state.realtime_hub = realtime_hub
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[app_settings.frontend_origin],
+        allow_credentials=False,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
     app.add_exception_handler(APIError, api_error_handler)
     app.add_exception_handler(RequestValidationError, request_validation_error_handler)
     app.include_router(auth_router)
     app.include_router(activation_router)
     app.include_router(anniversary_router)
     app.include_router(dashboard_router)
+    app.include_router(device_router)
     app.include_router(location_router)
     app.include_router(zone_router)
     app.include_router(person_router)
