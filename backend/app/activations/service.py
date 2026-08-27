@@ -15,6 +15,7 @@ from backend.app.db.models.user import User
 from backend.app.db.session import get_session_factory
 from backend.app.lights.reconciliation import reconcile_location
 from backend.app.lights.resolver import resolve_desired_state
+from backend.app.realtime.events import publish_realtime_event
 
 
 def _require_aware(value: datetime, field: str) -> None:
@@ -72,6 +73,20 @@ async def _create_activation(
     )
     session.add(activation)
     await session.flush()
+    await publish_realtime_event(
+        session,
+        "activation.changed",
+        entity_type="activation",
+        entity_id=activation.id,
+        occurred_at=now,
+        payload={
+            "action": "STARTED",
+            "location_id": str(location_id),
+            "reason": reason.value,
+            "starts_at": starts_at.isoformat(),
+            "expires_at": expires_at.isoformat() if expires_at is not None else None,
+        },
+    )
     resolution = await resolve_desired_state(location_id, now, session=session)
     if resolution.changed:
         await reconcile_location(
@@ -147,7 +162,8 @@ async def _end_activation(
             "ACTIVATION_NOT_FOUND",
             f"Activation {activation_id} was not found",
         )
-    if activation.ended_at is None:
+    ended = activation.ended_at is None
+    if ended:
         activation.ended_at = ended_at
         if actor is not None:
             activation.metadata_json = {
@@ -155,6 +171,18 @@ async def _end_activation(
                 "ended_by_user_id": str(actor.id),
             }
         await session.flush()
+        await publish_realtime_event(
+            session,
+            "activation.changed",
+            entity_type="activation",
+            entity_id=activation.id,
+            occurred_at=ended_at,
+            payload={
+                "action": "ENDED",
+                "location_id": str(activation.location_id),
+                "reason": activation.reason.value,
+            },
+        )
     resolution = await resolve_desired_state(
         activation.location_id,
         ended_at,
@@ -221,6 +249,19 @@ async def _expire_activations(
     for activation in activations:
         activation.ended_at = now
     await session.flush()
+    for activation in activations:
+        await publish_realtime_event(
+            session,
+            "activation.changed",
+            entity_type="activation",
+            entity_id=activation.id,
+            occurred_at=now,
+            payload={
+                "action": "EXPIRED",
+                "location_id": str(activation.location_id),
+                "reason": activation.reason.value,
+            },
+        )
     for location_id in location_ids:
         resolution = await resolve_desired_state(location_id, now, session=session)
         if resolution.changed:

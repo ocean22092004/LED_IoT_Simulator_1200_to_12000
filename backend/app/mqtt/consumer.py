@@ -32,6 +32,13 @@ from backend.app.mqtt.schemas import (
     SnapshotMessage,
     TelemetryMessage,
 )
+from backend.app.realtime.events import RealtimeEventType, publish_realtime_event
+
+
+@dataclass(frozen=True)
+class LampReportChange:
+    state_changed: bool
+    health_changed: bool
 
 
 def _aware(value: datetime, field: str) -> None:
@@ -125,7 +132,9 @@ def _apply_lamp_report(
     health: LampHealth,
     current_ma: Decimal | None,
     occurred_at: datetime,
-) -> None:
+) -> LampReportChange:
+    old_actual_state = lamp.actual_state
+    old_health = lamp.lamp_health
     old_values = (
         lamp.actual_state,
         lamp.controller_output_state,
@@ -142,6 +151,75 @@ def _apply_lamp_report(
     new_values = (actual_state, output_state, health, current_ma)
     if old_values != new_values:
         lamp.version += 1
+    return LampReportChange(
+        state_changed=old_actual_state is not actual_state,
+        health_changed=old_health is not health,
+    )
+
+
+async def _emit_lamp_change(
+    session: AsyncSession,
+    lamp: LampState,
+    change: LampReportChange,
+    occurred_at: datetime,
+) -> None:
+    if change.state_changed:
+        await publish_realtime_event(
+            session,
+            "location.state_changed",
+            entity_type="location",
+            entity_id=lamp.location_id,
+            occurred_at=occurred_at,
+            payload={
+                "actual_state": lamp.actual_state.value,
+                "desired_state": lamp.desired_state.value,
+                "version": lamp.version,
+            },
+        )
+    if change.health_changed:
+        await publish_realtime_event(
+            session,
+            "lamp.health_changed",
+            entity_type="location",
+            entity_id=lamp.location_id,
+            occurred_at=occurred_at,
+            payload={
+                "lamp_health": lamp.lamp_health.value,
+                "current_ma": lamp.current_ma,
+                "version": lamp.version,
+            },
+        )
+
+
+async def _emit_status_change(
+    session: AsyncSession,
+    *,
+    entity_type: str,
+    entity_id: Any,
+    code: str,
+    old_status: DeviceStatus,
+    new_status: DeviceStatus,
+    occurred_at: datetime,
+) -> None:
+    if old_status is new_status:
+        return
+    event_type: RealtimeEventType = (
+        "gateway.status_changed"
+        if entity_type == "gateway"
+        else "controller.status_changed"
+    )
+    await publish_realtime_event(
+        session,
+        event_type,
+        entity_type=entity_type,
+        entity_id=entity_id,
+        occurred_at=occurred_at,
+        payload={
+            "code": code,
+            "old_status": old_status.value,
+            "status": new_status.value,
+        },
+    )
 
 
 async def _lamp_states_for_gateway(
@@ -173,9 +251,13 @@ async def _lamp_states_for_controller(
     return [(lamp, channel) for lamp, channel in rows]
 
 
-def _mark_unknown(lamps: Sequence[LampState], occurred_at: datetime) -> None:
+async def _mark_unknown(
+    session: AsyncSession,
+    lamps: Sequence[LampState],
+    occurred_at: datetime,
+) -> None:
     for lamp in lamps:
-        _apply_lamp_report(
+        change = _apply_lamp_report(
             lamp,
             actual_state=ActualState.UNKNOWN,
             output_state=ControllerOutputState.UNKNOWN,
@@ -183,6 +265,7 @@ def _mark_unknown(lamps: Sequence[LampState], occurred_at: datetime) -> None:
             current_ma=None,
             occurred_at=occurred_at,
         )
+        await _emit_lamp_change(session, lamp, change, occurred_at)
 
 
 async def _mark_controller_unknown(
@@ -191,7 +274,7 @@ async def _mark_controller_unknown(
     occurred_at: datetime,
 ) -> None:
     rows = await _lamp_states_for_controller(session, controller.id)
-    _mark_unknown([lamp for lamp, _ in rows], occurred_at)
+    await _mark_unknown(session, [lamp for lamp, _ in rows], occurred_at)
 
 
 async def _handle_ack(
@@ -223,6 +306,9 @@ async def _handle_ack(
     ):
         raise ValueError("ACK mapping does not match command mapping")
 
+    old_gateway_status = gateway.status
+    old_controller_status = controller.status
+    old_command_status = command.status
     gateway.status = DeviceStatus.ONLINE
     gateway.last_seen_at = received_at
     if payload.error_code == "CONTROLLER_OFFLINE":
@@ -248,7 +334,7 @@ async def _handle_ack(
         )
 
     if reported_actual is ActualState.UNKNOWN:
-        _apply_lamp_report(
+        lamp_change = _apply_lamp_report(
             lamp,
             actual_state=ActualState.UNKNOWN,
             output_state=ControllerOutputState.UNKNOWN,
@@ -267,7 +353,7 @@ async def _handle_ack(
             )
         else:
             health = lamp.lamp_health
-        _apply_lamp_report(
+        lamp_change = _apply_lamp_report(
             lamp,
             actual_state=reported_actual,
             output_state=output_state,
@@ -275,6 +361,38 @@ async def _handle_ack(
             current_ma=current,
             occurred_at=payload.occurred_at,
         )
+
+    await _emit_status_change(
+        session,
+        entity_type="gateway",
+        entity_id=gateway.id,
+        code=gateway.code,
+        old_status=old_gateway_status,
+        new_status=gateway.status,
+        occurred_at=payload.occurred_at,
+    )
+    await _emit_status_change(
+        session,
+        entity_type="controller",
+        entity_id=controller.id,
+        code=controller.code,
+        old_status=old_controller_status,
+        new_status=controller.status,
+        occurred_at=payload.occurred_at,
+    )
+    if old_command_status is not CommandStatus.FAILED and command.status is CommandStatus.FAILED:
+        await publish_realtime_event(
+            session,
+            "command.failed",
+            entity_type="command",
+            entity_id=command.id,
+            occurred_at=payload.occurred_at,
+            payload={
+                "location_id": str(command.location_id),
+                "error": command.last_error,
+            },
+        )
+    await _emit_lamp_change(session, lamp, lamp_change, payload.occurred_at)
 
     _record_event(
         session,
@@ -317,6 +435,7 @@ async def _handle_presence(
     session: AsyncSession,
 ) -> None:
     gateway, site = await _find_gateway(session, payload.gateway_code, site_code)
+    old_gateway_status = gateway.status
     gateway.status = DeviceStatus(payload.status)
     if gateway.status is DeviceStatus.ONLINE:
         gateway.last_seen_at = received_at
@@ -328,12 +447,35 @@ async def _handle_presence(
                 .with_for_update()
             )
         )
+        old_controller_statuses = {
+            controller.id: controller.status for controller in controllers
+        }
         for controller in controllers:
             controller.status = DeviceStatus.OFFLINE
-        _mark_unknown(
+        await _mark_unknown(
+            session,
             await _lamp_states_for_gateway(session, gateway.id),
             payload.occurred_at,
         )
+        for controller in controllers:
+            await _emit_status_change(
+                session,
+                entity_type="controller",
+                entity_id=controller.id,
+                code=controller.code,
+                old_status=old_controller_statuses[controller.id],
+                new_status=controller.status,
+                occurred_at=payload.occurred_at,
+            )
+    await _emit_status_change(
+        session,
+        entity_type="gateway",
+        entity_id=gateway.id,
+        code=gateway.code,
+        old_status=old_gateway_status,
+        new_status=gateway.status,
+        occurred_at=payload.occurred_at,
+    )
     _record_event(
         session,
         site=site,
@@ -373,6 +515,7 @@ async def _handle_heartbeat(
     session: AsyncSession,
 ) -> None:
     gateway, site = await _find_gateway(session, payload.gateway_code, site_code)
+    old_gateway_status = gateway.status
     gateway.status = DeviceStatus.ONLINE
     gateway.last_seen_at = received_at
     codes = [item.code for item in payload.controllers]
@@ -380,10 +523,29 @@ async def _handle_heartbeat(
         raise ValueError("heartbeat controller codes must be unique")
     for report in payload.controllers:
         controller = await _find_controller(session, gateway, report.code)
+        old_controller_status = controller.status
         controller.status = DeviceStatus(report.status)
         controller.last_seen_at = received_at
         if controller.status is DeviceStatus.OFFLINE:
             await _mark_controller_unknown(session, controller, payload.occurred_at)
+        await _emit_status_change(
+            session,
+            entity_type="controller",
+            entity_id=controller.id,
+            code=controller.code,
+            old_status=old_controller_status,
+            new_status=controller.status,
+            occurred_at=payload.occurred_at,
+        )
+    await _emit_status_change(
+        session,
+        entity_type="gateway",
+        entity_id=gateway.id,
+        code=gateway.code,
+        old_status=old_gateway_status,
+        new_status=gateway.status,
+        occurred_at=payload.occurred_at,
+    )
     _record_event(
         session,
         site=site,
@@ -423,6 +585,7 @@ async def _handle_snapshot(
     session: AsyncSession,
 ) -> None:
     gateway, site = await _find_gateway(session, payload.gateway_code, site_code)
+    old_gateway_status = gateway.status
     gateway.status = DeviceStatus.ONLINE
     gateway.last_seen_at = received_at
     codes = [item.code for item in payload.controllers]
@@ -430,11 +593,25 @@ async def _handle_snapshot(
         raise ValueError("snapshot controller codes must be unique")
     for report in payload.controllers:
         controller = await _find_controller(session, gateway, report.code)
+        old_controller_status = controller.status
         controller.status = DeviceStatus(report.status)
         controller.last_seen_at = received_at
         rows = await _lamp_states_for_controller(session, controller.id)
         if controller.status is DeviceStatus.OFFLINE:
-            _mark_unknown([lamp for lamp, _ in rows], payload.occurred_at)
+            await _mark_unknown(
+                session,
+                [lamp for lamp, _ in rows],
+                payload.occurred_at,
+            )
+            await _emit_status_change(
+                session,
+                entity_type="controller",
+                entity_id=controller.id,
+                code=controller.code,
+                old_status=old_controller_status,
+                new_status=controller.status,
+                occurred_at=payload.occurred_at,
+            )
             continue
         on_channels = set(report.on_channels)
         failed_channels = set(report.failed_lamp_channels)
@@ -449,7 +626,7 @@ async def _handle_snapshot(
                 current = None
             else:
                 current = Decimal("0")
-            _apply_lamp_report(
+            change = _apply_lamp_report(
                 lamp,
                 actual_state=ActualState.ON if is_on else ActualState.OFF,
                 output_state=(
@@ -461,6 +638,25 @@ async def _handle_snapshot(
                 current_ma=current,
                 occurred_at=payload.occurred_at,
             )
+            await _emit_lamp_change(session, lamp, change, payload.occurred_at)
+        await _emit_status_change(
+            session,
+            entity_type="controller",
+            entity_id=controller.id,
+            code=controller.code,
+            old_status=old_controller_status,
+            new_status=controller.status,
+            occurred_at=payload.occurred_at,
+        )
+    await _emit_status_change(
+        session,
+        entity_type="gateway",
+        entity_id=gateway.id,
+        code=gateway.code,
+        old_status=old_gateway_status,
+        new_status=gateway.status,
+        occurred_at=payload.occurred_at,
+    )
     _record_event(
         session,
         site=site,
@@ -501,6 +697,8 @@ async def _handle_telemetry(
 ) -> None:
     gateway, site = await _find_gateway(session, payload.gateway_code, site_code)
     controller = await _find_controller(session, gateway, payload.controller_code)
+    old_gateway_status = gateway.status
+    old_controller_status = controller.status
     gateway.status = DeviceStatus.ONLINE
     gateway.last_seen_at = received_at
     controller.status = DeviceStatus.ONLINE
@@ -534,7 +732,7 @@ async def _handle_telemetry(
             # Near-zero current while output is OFF cannot diagnose a failed lamp.
             health = lamp.lamp_health
             output_state = ControllerOutputState.OFF
-        _apply_lamp_report(
+        change = _apply_lamp_report(
             lamp,
             actual_state=report.output_state,
             output_state=output_state,
@@ -542,6 +740,26 @@ async def _handle_telemetry(
             current_ma=current,
             occurred_at=payload.occurred_at,
         )
+        await _emit_lamp_change(session, lamp, change, payload.occurred_at)
+
+    await _emit_status_change(
+        session,
+        entity_type="gateway",
+        entity_id=gateway.id,
+        code=gateway.code,
+        old_status=old_gateway_status,
+        new_status=gateway.status,
+        occurred_at=payload.occurred_at,
+    )
+    await _emit_status_change(
+        session,
+        entity_type="controller",
+        entity_id=controller.id,
+        code=controller.code,
+        old_status=old_controller_status,
+        new_status=controller.status,
+        occurred_at=payload.occurred_at,
+    )
 
     _record_event(
         session,

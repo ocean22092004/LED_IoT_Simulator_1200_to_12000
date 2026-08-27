@@ -12,6 +12,7 @@ from backend.app.common.errors import APIError
 from backend.app.db.models.activation import Activation
 from backend.app.db.models.lamp_state import LampState
 from backend.app.db.session import get_session_factory
+from backend.app.realtime.events import publish_realtime_event
 
 
 @dataclass(frozen=True)
@@ -73,6 +74,19 @@ async def _resolve_desired_state(
         lamp_state.desired_changed_at = now
         lamp_state.version += 1
         await session.flush()
+        await publish_realtime_event(
+            session,
+            "location.state_changed",
+            entity_type="location",
+            entity_id=location_id,
+            occurred_at=now,
+            payload={
+                "desired_state": lamp_state.desired_state.value,
+                "actual_state": lamp_state.actual_state.value,
+                "active_reasons": list(result.active_reasons),
+                "version": lamp_state.version,
+            },
+        )
     return result
 
 

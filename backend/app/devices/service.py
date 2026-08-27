@@ -14,6 +14,7 @@ from backend.app.db.models.device import Controller, Gateway
 from backend.app.db.models.lamp_state import LampState
 from backend.app.db.models.location import Location
 from backend.app.db.session import get_session_factory
+from backend.app.realtime.events import publish_realtime_event
 
 
 @dataclass(frozen=True)
@@ -28,7 +29,8 @@ def _require_aware(value: datetime, field: str) -> None:
         raise ValueError(f"{field} must be timezone-aware")
 
 
-def _mark_lamp_unknown(lamp: LampState, now: datetime) -> bool:
+def _mark_lamp_unknown(lamp: LampState, now: datetime) -> tuple[bool, bool]:
+    health_changed = lamp.lamp_health is not LampHealth.UNKNOWN
     changed = (
         lamp.actual_state is not ActualState.UNKNOWN
         or lamp.controller_output_state is not ControllerOutputState.UNKNOWN
@@ -43,7 +45,7 @@ def _mark_lamp_unknown(lamp: LampState, now: datetime) -> bool:
     lamp.current_ma = None
     if changed:
         lamp.version += 1
-    return changed
+    return changed, health_changed
 
 
 async def _sweep_stale_devices(
@@ -69,6 +71,18 @@ async def _sweep_stale_devices(
     stale_gateway_ids = {gateway.id for gateway in stale_gateways}
     for gateway in stale_gateways:
         gateway.status = DeviceStatus.OFFLINE
+        await publish_realtime_event(
+            session,
+            "gateway.status_changed",
+            entity_type="gateway",
+            entity_id=gateway.id,
+            occurred_at=now,
+            payload={
+                "code": gateway.code,
+                "old_status": DeviceStatus.ONLINE.value,
+                "status": DeviceStatus.OFFLINE.value,
+            },
+        )
 
     stale_controllers = list(
         await session.scalars(
@@ -87,6 +101,18 @@ async def _sweep_stale_devices(
     stale_controller_ids = {controller.id for controller in stale_controllers}
     for controller in stale_controllers:
         controller.status = DeviceStatus.OFFLINE
+        await publish_realtime_event(
+            session,
+            "controller.status_changed",
+            entity_type="controller",
+            entity_id=controller.id,
+            occurred_at=now,
+            payload={
+                "code": controller.code,
+                "old_status": DeviceStatus.ONLINE.value,
+                "status": DeviceStatus.OFFLINE.value,
+            },
+        )
 
     if not stale_gateway_ids and not stale_controller_ids:
         return StaleDeviceSweepResult(0, 0, 0)
@@ -103,7 +129,37 @@ async def _sweep_stale_devices(
             .with_for_update(skip_locked=True)
         )
     )
-    changed_locations = sum(_mark_lamp_unknown(lamp, now) for lamp in lamps)
+    changed_locations = 0
+    for lamp in lamps:
+        changed, health_changed = _mark_lamp_unknown(lamp, now)
+        if not changed:
+            continue
+        changed_locations += 1
+        await publish_realtime_event(
+            session,
+            "location.state_changed",
+            entity_type="location",
+            entity_id=lamp.location_id,
+            occurred_at=now,
+            payload={
+                "actual_state": lamp.actual_state.value,
+                "desired_state": lamp.desired_state.value,
+                "version": lamp.version,
+            },
+        )
+        if health_changed:
+            await publish_realtime_event(
+                session,
+                "lamp.health_changed",
+                entity_type="location",
+                entity_id=lamp.location_id,
+                occurred_at=now,
+                payload={
+                    "lamp_health": lamp.lamp_health.value,
+                    "current_ma": None,
+                    "version": lamp.version,
+                },
+            )
     await session.flush()
     return StaleDeviceSweepResult(
         gateways_marked_offline=len(stale_gateways),

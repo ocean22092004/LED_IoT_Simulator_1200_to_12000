@@ -14,6 +14,7 @@ from backend.app.db.session import get_session_factory
 from backend.app.mqtt.publisher import MQTTPublisher, PahoMQTTPublisher
 from backend.app.mqtt.schemas import LightCommandMessage
 from backend.app.mqtt.topics import command_topic
+from backend.app.realtime.events import publish_realtime_event
 
 BACKOFF_SECONDS = (1, 2, 5)
 MAX_PUBLISH_ATTEMPTS = len(BACKOFF_SECONDS)
@@ -78,6 +79,18 @@ async def _process_due_commands(
         if command.attempt_count >= MAX_PUBLISH_ATTEMPTS:
             command.status = CommandStatus.FAILED
             command.last_error = "ACK timeout after 3 publish attempts"
+            await publish_realtime_event(
+                session,
+                "command.failed",
+                entity_type="command",
+                entity_id=command.id,
+                occurred_at=now,
+                payload={
+                    "location_id": str(command.location_id),
+                    "error": command.last_error,
+                    "attempt_count": command.attempt_count,
+                },
+            )
             continue
 
         message = await _command_message(command, session)
@@ -93,6 +106,18 @@ async def _process_due_commands(
             command.last_error = f"MQTT publish failed: {error}"
             if command.attempt_count >= MAX_PUBLISH_ATTEMPTS:
                 command.status = CommandStatus.FAILED
+                await publish_realtime_event(
+                    session,
+                    "command.failed",
+                    entity_type="command",
+                    entity_id=command.id,
+                    occurred_at=now,
+                    payload={
+                        "location_id": str(command.location_id),
+                        "error": command.last_error,
+                        "attempt_count": command.attempt_count,
+                    },
+                )
             else:
                 command.status = CommandStatus.PENDING
                 command.next_attempt_at = now + timedelta(

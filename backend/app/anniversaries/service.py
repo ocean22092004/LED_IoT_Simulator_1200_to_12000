@@ -30,6 +30,7 @@ from backend.app.db.models.user import User
 from backend.app.db.session import get_session_factory
 from backend.app.lights.reconciliation import reconcile_location
 from backend.app.lights.resolver import resolve_desired_state
+from backend.app.realtime.events import publish_realtime_event
 
 BUSINESS_TIMEZONE = ZoneInfo("Asia/Ho_Chi_Minh")
 
@@ -244,9 +245,24 @@ async def _sync_anniversaries(
             ]
         )
         .on_conflict_do_nothing(index_elements=["location_id", "dedupe_key"])
-        .returning(Activation.id)
+        .returning(Activation.id, Activation.location_id)
     )
-    inserted_ids = list(await session.scalars(statement))
+    inserted_rows = list((await session.execute(statement)).tuples())
+    for activation_id, location_id in inserted_rows:
+        await publish_realtime_event(
+            session,
+            "activation.changed",
+            entity_type="activation",
+            entity_id=activation_id,
+            occurred_at=now,
+            payload={
+                "action": "STARTED",
+                "location_id": str(location_id),
+                "reason": ActivationReason.ANNIVERSARY.value,
+                "starts_at": starts_at.isoformat(),
+                "expires_at": expires_at.isoformat(),
+            },
+        )
     for location_id in location_ids:
         resolution = await resolve_desired_state(location_id, now, session=session)
         if resolution.changed:
@@ -256,7 +272,7 @@ async def _sync_anniversaries(
                 now=now,
                 session=session,
             )
-    return len(inserted_ids)
+    return len(inserted_rows)
 
 
 async def sync_anniversaries_for_local_date(
